@@ -84,15 +84,24 @@ Backups always include a SHA-256 manifest.
 
 ```bash
 grok-utils usage report --by project --top 8
-grok-utils usage report --by model --since 2026-05-01
+# Token path: list$ + est$ (same cash_scale as usage cost)
+grok-utils usage report --by app --from 2026-08-01 -m grok-4.5
+grok-utils usage report --tokens --by app --from 2026-08-01 --to 2026-08-05
 
 grok-utils usage top-projects
 grok-utils usage models
 grok-utils usage timeline --days 30
 
-# Rough cost estimates (proxy using message counts + static pricing)
-grok-utils usage cost --by model
-grok-utils usage cost --by project
+# Token-accurate cost: list$ + est$ (cash_scale default or toml)
+grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.5
+# From a date through latest sessions (omit --to)
+grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
+# Plan advisor: API vs SuperGrok vs Heavy for this intensity
+grok-utils usage cost --from 2026-07-18 --by app -m grok-4.5 --plan-advisor
+# Optional day-to-day default in ~/.grok/grok-utils.toml → [usage] cash_scale = 0.57
+grok-utils usage cost --from 2026-08-01 --by app --api-estimate
+grok-utils usage cost --by app --invoice-usd 180 --fixed-usd 30
+grok-utils usage info   # cash_scale toml, plan-advisor, ledger caveats
 ```
 
 ### 7. MCP, plugins, hooks, config

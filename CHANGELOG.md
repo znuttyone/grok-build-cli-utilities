@@ -4,6 +4,28 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+## [0.4.0] - 2026-08-06
+
+### Added
+- Token-accurate `usage cost` from `turn_completed.usage` in `updates.jsonl` (input/output/cached/reasoning, deduped by prompt_id).
+- Pure-API rate table (`utils/pricing.py`); **`--rates-model` / `-m`** (default **grok-4.5**).
+- **list$ + est$** on `usage cost` and token-based `usage report` (`est$` = list$ × cash_scale, default **0.57**).
+- Optional `--prepaid-usd` / `--credits-remaining`, `--cash-scale`, toml `[usage] cash_scale`.
+- **`--plan-advisor` / `-P`**: pure API vs SuperGrok vs SuperGrok Heavy (run-rate → monthly; soft “if intensity holds”).
+- Optional SuperGrok/cash allocation: `--invoice-usd` / `--fixed-usd` by `costUsdTicks`.
+- Date span in report/cost titles; warn when `--from`/`--to` extend past session data; JSON `result_from` / `result_to`.
+- Novice **FAQ** in `usage info` + `docs/commands/usage.md` (Session Cost vs list$/est$, Credits, Weekly limit, Auto topup).
+- Tests: `tests/test_usage_tokens.py`.
+
+### Changed
+- **`usage cost` default** uses real turn tokens (not message×400). Legacy: `--mode rough`.
+- Help: clear metavars / “Requires amount” for value options; examples for open-ended `--from` and invoice/prepaid.
+- Docs: Phase 1 maintain defaults when xAI announces changes; future Models API list-rate refresh notes (not in v1 network path).
+
 ## [0.3.1] - 2026-06-03
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
