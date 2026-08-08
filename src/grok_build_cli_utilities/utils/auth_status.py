@@ -218,13 +218,13 @@ def format_auth_short(status: AuthStatus) -> list[str]:
 def format_auth_plan_advisor_line(status: AuthStatus) -> str | None:
     if status.effective == "supergrok_session":
         return (
-            "Current machine auth is SuperGrok session — SuperGrok/Heavy rows match "
-            "the active path; pure API rows are counterfactual unless you switch auth."
+            "Auth now: SuperGrok session — Pure API row is a what-if "
+            "(not your current bill)"
         )
     if status.effective == "api_key":
         return (
-            "Current machine auth is API key — pure API rows match the active path; "
-            "SuperGrok rows are counterfactual unless you run grok login again."
+            "Auth now: API key — SuperGrok/Heavy rows are what-if "
+            "(not your current bill unless you grok login)"
         )
     return None
 

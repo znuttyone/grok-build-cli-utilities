@@ -8,7 +8,9 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 - **`grok-utils auth status`**: SuperGrok session vs API key; optional `--history`; **Extra Credits $** + **weekly %** from billing log.
 - Auth path + wallet snapshot on `usage cost` footer / JSON (`prepaid_balance_usd`, `weekly_usage_pct`).
 - **Path/regime cash scales**: API 1.0, SuperGrok pool 0.0, overage 1.9; weekly% unknown → list$ scale + caveat.
-- **`--topoff-discount` 0..1** (toml `topoff_discount`; **1.0** = free tops); plan-advisor promo table **full / −25% / free** (`topoff_discount_scenarios`).
+- **`--topoff-discount` 0..1** optional pin for est_cash$; **`-P` always ranks** offered pack promos **−20/−25/−40%** in the plan table (no flag required) + single ★ best plan for the window.
+- Plan-advisor accuracy: est$ mix **% sum to 100**; tops **ceil to pack size** (`topoff_pack_usd`, default 100); promo dependency in ★ banner; week list$ pace check; notes separate pool context from $/mo formula.
+- Wallet labels (credits **remaining**, weekly limit **% used**); SuperGrok (?) footnote; **`--detail`** gates savings attribution, 1.9× source, hybrid tip, week pace, per-app regime; JSON: `wallet`, `plan_advisor.candidates/best`, `week_list_usd`, `list_pct`, per-bucket `regime_list_pct`.
 - `est_cash$` = est$ × (1 − discount) when promo modeled; primary plan “best fit” stays full price.
 
 ### Changed

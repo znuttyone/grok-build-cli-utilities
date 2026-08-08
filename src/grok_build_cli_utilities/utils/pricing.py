@@ -158,8 +158,26 @@ def clamp_topoff_discount(discount: float) -> float:
     return min(max(float(discount), 0.0), 1.0)
 
 
-# Default plan-advisor card scenarios: full price, −25%, free tops (−100%).
-DEFAULT_TOPOFF_DISCOUNT_SCENARIOS: tuple[float, ...] = (0.0, 0.25, 1.0)
+# Offered pack promos for plan-advisor rows (not full price; not free 100%).
+DEFAULT_TOPOFF_DISCOUNT_SCENARIOS: tuple[float, ...] = (0.20, 0.25, 0.40)
+# Extra Credits packs for card math (round top face up to whole packs).
+DEFAULT_TOPOFF_PACK_USD = 100.0
+
+
+def ceil_to_pack_usd(face_usd: float, pack_usd: float = DEFAULT_TOPOFF_PACK_USD) -> float:
+    """Round face credit need up to whole pack sizes (e.g. $380 → $400 @ $100 packs)."""
+    face = max(0.0, float(face_usd))
+    pack = max(0.0, float(pack_usd))
+    if face <= 0 or pack <= 0:
+        return face
+    import math
+
+    return float(math.ceil(face / pack - 1e-12) * pack)
+
+
+def resolve_topoff_pack_usd(usage_cfg: dict[str, Any] | None = None) -> float:
+    cfg = usage_cfg or {}
+    return max(0.0, cfg_float(cfg, "topoff_pack_usd", DEFAULT_TOPOFF_PACK_USD))
 
 
 def topoff_discount_label(discount: float) -> str:
@@ -315,10 +333,12 @@ def resolve_topoff_discount_scenarios(
     *,
     active_discount: float | None = None,
 ) -> list[float]:
-    """Scenario list for plan-advisor card modeling (full / −25% / free by default).
+    """Offered pack promo fractions for plan-advisor rows (default −20/−25/−40%).
 
-    Optional toml: topoff_discount_scenarios = [0.0, 0.25, 1.0]
-    Always includes active_discount when set and not already in the list.
+    Full price is the base SuperGrok/Heavy table rows, not a scenario.
+    Optional toml: topoff_discount_scenarios = [0.20, 0.25, 0.40]
+    Active --topoff-discount is appended when set and not already listed.
+    Zero discounts are dropped (redundant with full-price rows).
     """
     cfg = usage_cfg or {}
     raw = cfg.get("topoff_discount_scenarios")
@@ -331,10 +351,12 @@ def resolve_topoff_discount_scenarios(
                 continue
     if not out:
         out = list(DEFAULT_TOPOFF_DISCOUNT_SCENARIOS)
-    # Dedupe while preserving order
+    # Dedupe while preserving order; drop full-price 0 (base rows cover that)
     seen: set[float] = set()
     uniq: list[float] = []
     for d in out:
+        if d <= 0:
+            continue
         key = round(d, 6)
         if key in seen:
             continue
@@ -342,9 +364,10 @@ def resolve_topoff_discount_scenarios(
         uniq.append(d)
     if active_discount is not None:
         ad = clamp_topoff_discount(active_discount)
-        key = round(ad, 6)
-        if key not in seen:
-            uniq.append(ad)
+        if ad > 0:
+            key = round(ad, 6)
+            if key not in seen:
+                uniq.append(ad)
     return uniq
 
 
@@ -394,17 +417,42 @@ class AuthMixResult:
     # Optional one-pass bucket totals when group_key_fn was provided
     est_by_key: dict[str, float] = field(default_factory=dict)
     list_by_key: dict[str, float] = field(default_factory=dict)
+    # key → path → list$ (regime breakdown per app/bucket)
+    list_by_key_path: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
+        # Reconciled list% on slices for consumers that sum to 100
+        weights = [s.list_usd for s in self.slices]
+        total_w = sum(weights) or 1.0
+        raw = [100.0 * w / total_w for w in weights]
+        floors = [int(x) for x in raw]
+        rem = 100 - sum(floors)
+        order = sorted(
+            range(len(raw)),
+            key=lambda i: (raw[i] - floors[i], i),
+            reverse=True,
+        )
+        pcts = floors[:]
+        for i in order[: max(0, rem)]:
+            pcts[i] += 1
+        slices_out = []
+        for s, pct in zip(self.slices, pcts, strict=True):
+            d = s.as_dict()
+            d["list_pct"] = pct
+            slices_out.append(d)
         return {
             "source": self.source,
             "list_total": round(self.list_total, 4),
             "est_total": round(self.est_total, 4),
             "uniform_scale": self.uniform_scale,
             "uniform_src": self.uniform_src,
-            "slices": [s.as_dict() for s in self.slices],
+            "slices": slices_out,
             "est_by_key": {k: round(v, 4) for k, v in self.est_by_key.items()},
             "list_by_key": {k: round(v, 4) for k, v in self.list_by_key.items()},
+            "list_by_key_path": {
+                k: {p: round(v, 4) for p, v in paths.items()}
+                for k, paths in self.list_by_key_path.items()
+            },
         }
 
 
@@ -444,6 +492,7 @@ def estimate_with_auth_mix(
     acc: dict[str, dict[str, float | int | str]] = {}
     est_by_key: dict[str, float] = {}
     list_by_key: dict[str, float] = {}
+    list_by_key_path: dict[str, dict[str, float]] = {}
 
     for r in records:
         list_b = float(
@@ -505,6 +554,8 @@ def estimate_with_auth_mix(
                 gkey = "?"
             est_by_key[gkey] = est_by_key.get(gkey, 0.0) + est_b
             list_by_key[gkey] = list_by_key.get(gkey, 0.0) + list_b
+            path_map = list_by_key_path.setdefault(gkey, {})
+            path_map[path] = path_map.get(path, 0.0) + list_b
 
         bucket = acc.setdefault(
             path,
@@ -563,6 +614,7 @@ def estimate_with_auth_mix(
             uniform_src=force_uniform_src,
             est_by_key=est_by_key,
             list_by_key=list_by_key,
+            list_by_key_path=list_by_key_path,
         )
     return AuthMixResult(
         slices=slices,
@@ -573,6 +625,7 @@ def estimate_with_auth_mix(
         uniform_src=None,
         est_by_key=est_by_key,
         list_by_key=list_by_key,
+        list_by_key_path=list_by_key_path,
     )
 
 

@@ -85,13 +85,18 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
      level timeline from logs — not per-turn billing. Pre-log gaps are labeled
      unknown.  grok-utils auth status --history
 
-  Q: Top-off promo −25% or free (−100%) credits?
-  A: Default assumes full pack price (topoff_discount = 0). Model promos:
-       --topoff-discount 0.25   or  1.0 (free tops)
-       [usage] topoff_discount = 0.25
-     Plan-advisor always shows card scenarios (full / −25% / free) without
-     changing the full-price "best fit" winner. Free tops → card overage $0;
-     you still pay the SuperGrok/Heavy subscription.
+  Q: Pack promos (−20% / −25% / −40%) and plan-advisor?
+  A: usage cost -P ranks Pure API, SuperGrok, Heavy, and offered pack promos
+     (−20/−25/−40 tops) from this window's list$ run-rate — no flag required.
+     ★ marks the single cheapest option for the window (tops priced @ list$ face).
+     Optional: --topoff-discount 0.40 pins your promo for est_cash$.
+     Caveats Interactive users should know:
+       · weekly include $ is estimated — heavy Build often exhausts the pool early
+       · Extra Credits may burn faster than pure list$ — advisor shows a sensitivity
+         line at overage scale (~1.9×) so Heavy can win if burn stays high
+       · monthly spend can be burstier than the smooth average (auto top-ups)
+       · promos temporary; quieter months favor Pure API
+     Config: topoff_discount_scenarios = [0.20, 0.25, 0.40]
 
   Q: Which number should I trust for budgeting?
   A: - Per-app / per-day activity → list$
@@ -151,7 +156,7 @@ est$ = list$ × cash_scale (path/regime or forced)
   Top-off promo (card, not list$):
     --topoff-discount 0..1   or  [usage] topoff_discount
     est_cash$ = est$ × (1 − discount) when discount > 0
-    plan-advisor scenarios: topoff_discount_scenarios = [0.0, 0.25, 1.0]
+    plan-advisor scenarios: topoff_discount_scenarios = [0.20, 0.25, 0.40]
 
 Effective rates (list × scale) assume a *uniform* scale vs list when forced.
   Prepaid may not discount cached/input/output equally — only wallet total is known offline.
@@ -159,9 +164,8 @@ Effective rates (list × scale) assume a *uniform* scale vs list when forced.
 --plan-advisor / -P
   Compare pure API vs SuperGrok vs SuperGrok Heavy for the same window
   (run-rate → monthly projection). "Best fit" assumes this window's intensity
-  continues and full-price tops. Promo rows (−25%, free tops, …) are "if promo
-  holds" only. Weekly pool $ sizes are estimates. Heavy is not auto-detected
-  from auth (same SuperGrok session path offline).
+  continues. Table ranks full-price plans plus offered pack promos (−20/−25/−40).
+  Weekly pool $ sizes are estimates. Heavy is not auto-detected from auth.
 
   [usage]
   supergrok_usd = 30
@@ -170,7 +174,7 @@ Effective rates (list × scale) assume a *uniform* scale vs list when forced.
   heavy_weekly_include_usd = 150
   project_days = 30
   topoff_discount = 0.0
-  topoff_discount_scenarios = [0.0, 0.25, 1.0]
+  topoff_discount_scenarios = [0.20, 0.25, 0.40]
 
 MAINTAINING DEFAULTS (Phase 1 — no network in usage cost)
   When xAI announces API rate or SuperGrok/Heavy price changes:

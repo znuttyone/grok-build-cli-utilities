@@ -116,7 +116,7 @@ cash_scale_api = 1.0
 cash_scale_supergrok_pool = 0.0
 cash_scale_supergrok_overage = 1.9
 topoff_discount = 0.0                   # 0 full price; 0.25 / 1.0 to model promo
-topoff_discount_scenarios = [0.0, 0.25, 1.0]
+topoff_discount_scenarios = [0.20, 0.25, 0.40]
 ```
 
 ### Options
@@ -164,7 +164,8 @@ cash_scale_supergrok_overage = 1.9      # SuperGrok Extra Credits (weekly ~100%)
 
 # Top-off pack promo: 0 = full price (normal). Model only — never auto-assumed.
 topoff_discount = 0.0                   # 0 | 0.25 | 1.0 (free tops)
-topoff_discount_scenarios = [0.0, 0.25, 1.0]  # plan-advisor card rows
+topoff_discount_scenarios = [0.20, 0.25, 0.40]  # offered pack promos in -P table
+topoff_pack_usd = 100                           # ceil Extra Credit face to pack size
 
 # Plan-advisor subscription knobs
 supergrok_usd = 30

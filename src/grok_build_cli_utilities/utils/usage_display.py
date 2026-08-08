@@ -11,7 +11,6 @@ from .pricing import (
     PlanAdvisorResult,
     TokenRates,
     cfg_float,
-    topoff_discount_label,
 )
 from .usage_cost_window import TokenCostWindow
 from .usage_tokens import UsageBucket
@@ -23,6 +22,21 @@ def fmt_tokens(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
     return str(n)
+
+
+def _reconcile_pcts(weights: list[float]) -> list[int]:
+    """Largest-remainder integers that sum to 100 (or 0 if all zero)."""
+    total = sum(weights)
+    if total <= 0:
+        return [0] * len(weights)
+    raw = [100.0 * w / total for w in weights]
+    floors = [int(x) for x in raw]
+    rem = 100 - sum(floors)
+    order = sorted(range(len(raw)), key=lambda i: (raw[i] - floors[i], i), reverse=True)
+    out = floors[:]
+    for i in order[: max(0, rem)]:
+        out[i] += 1
+    return out
 
 
 def print_auth_mix_summary(
@@ -44,49 +58,58 @@ def print_auth_mix_summary(
         "unknown": "unknown",
         "uniform": "uniform",
     }
+    weights = [float(s.list_usd) for s in mix.slices]
+    pcts = _reconcile_pcts(weights)
     parts: list[str] = []
-    for s in mix.slices:
+    for s, pct in zip(mix.slices, pcts, strict=True):
         lab = labels.get(s.path, s.path)
-        pct = (100.0 * s.list_usd / list_total) if list_total > 0 else 0.0
         if detail:
             parts.append(
                 f"{lab} prm={s.prompts} tok={fmt_tokens(s.tokens)} "
                 f"list${s.list_usd:.2f}→est${s.est_usd:.2f} "
-                f"({pct:.0f}% list · ×{s.scale:.2g})"
+                f"({pct}% list · ×{s.scale:.2g})"
             )
         else:
-            parts.append(f"{lab} est${s.est_usd:.2f} ({pct:.0f}% list · ×{s.scale:.2g})")
+            parts.append(f"{lab} est${s.est_usd:.2f} ({pct}% list · ×{s.scale:.2g})")
     if parts:
         sep = " · " if detail else " + "
         console.print(f"[bold]est$ mix[/bold]  {sep.join(parts)}")
 
 
-def print_wallet_auth_line(win: TokenCostWindow) -> None:
-    """Wallet / auth  Extra Credits $… · weekly N% · SuperGrok session"""
+def print_wallet_auth_line(win: TokenCostWindow, *, detail: bool = False) -> None:
+    """Explicit wallet labels (remaining balance · weekly % used · auth path)."""
     snap_parts: list[str] = []
     if win.prepaid_balance is not None:
-        snap_parts.append(f"Extra Credits ${win.prepaid_balance:.2f}")
+        snap_parts.append(f"Extra Credits remaining ${win.prepaid_balance:.2f}")
+    else:
+        snap_parts.append("Extra Credits remaining (no billing sample)")
     if win.weekly_pct is not None:
-        snap_parts.append(f"weekly {win.weekly_pct:g}%")
+        snap_parts.append(f"weekly SuperGrok limit {win.weekly_pct:g}% used")
+    else:
+        snap_parts.append("weekly SuperGrok limit (no sample)")
     auth_lab = {
-        "supergrok_session": "SuperGrok session",
-        "api_key": "API key",
-        "none": "no auth",
-    }.get(win.auth_st.effective, win.auth_st.effective)
+        "supergrok_session": "auth SuperGrok session",
+        "api_key": "auth API key",
+        "none": "auth none",
+    }.get(win.auth_st.effective, f"auth {win.auth_st.effective}")
     snap_parts.append(auth_lab)
     console.print(f"[bold]Wallet / auth[/bold]  {' · '.join(snap_parts)}")
-    if win.mix.source == "auth_mix" and win.est_total + 0.01 < win.list_total * 0.5:
+    if detail and win.mix.source == "auth_mix" and win.est_total + 0.01 < win.list_total * 0.5:
         console.print(
             "[dim]list$ = activity · est$ ≈ Extra Credits burn "
             "(0 while SuperGrok weekly pool has room)[/dim]"
         )
-    if any(
-        s.path in ("supergrok_unknown", "unknown")
+    has_sg_unknown = any(
+        s.path == "supergrok_unknown"
+        or (s.path == "unknown")
         or "unknown" in (s.scale_src or "")
         for s in win.mix.slices
-    ):
+    )
+    if has_sg_unknown:
         console.print(
-            "[dim]Some turns lack weekly%/auth history — est$ uses list$ there[/dim]"
+            "[dim]SuperGrok (?): weekly % unknown at turn time "
+            "(before billing log / gap) → est$ uses list$ scale, "
+            "not pool 0 or overage 1.9[/dim]"
         )
 
 
@@ -122,7 +145,7 @@ def print_token_cost_summary(
         force_uniform=win.force_uniform is not None,
         detail=detail,
     )
-    print_wallet_auth_line(win)
+    print_wallet_auth_line(win, detail=detail)
     if win.topoff_d > 0:
         console.print(
             f"[dim]Top-off promo[/dim]  {win.topoff_d:g} ({win.topoff_src}) → est_cash$"
@@ -181,6 +204,38 @@ def _plan_row(
         t.add_row(option, f"${monthly:.0f}", notes)
 
 
+def week_list_series(
+    records: list[Any],
+    rates: TokenRates,
+) -> list[tuple[str, float]]:
+    """ISO-week list$ totals for variance context (oldest → newest)."""
+    from collections import defaultdict
+
+    from .pricing import api_estimate_usd
+
+    by_week: dict[str, float] = defaultdict(float)
+    for r in records:
+        ts = getattr(r, "ts", None)
+        if ts is None:
+            continue
+        iso = ts.isocalendar()
+        key = f"{iso.year}-W{iso.week:02d}"
+        by_week[key] += float(
+            api_estimate_usd(
+                cached=int(getattr(r, "cached", 0) or 0),
+                uncached_in=max(
+                    0,
+                    int(getattr(r, "input", 0) or 0)
+                    - int(getattr(r, "cached", 0) or 0),
+                ),
+                output=int(getattr(r, "output", 0) or 0),
+                reasoning=int(getattr(r, "reasoning", 0) or 0),
+                rates=rates,
+            )
+        )
+    return sorted(by_week.items(), key=lambda kv: kv[0])
+
+
 def print_plan_advisor(
     a: PlanAdvisorResult,
     *,
@@ -189,33 +244,60 @@ def print_plan_advisor(
     topoff_scenarios: list[float] | None = None,
     active_topoff_discount: float = 0.0,
     detail: bool = False,
+    mix_slices: list[Any] | None = None,
+    pack_usd: float = 100.0,
+    week_list: list[tuple[str, float]] | None = None,
+    list_by_key_path: dict[str, dict[str, float]] | None = None,
 ) -> None:
-    """Plan comparison: compact by default; promo/overage with --detail."""
-    winner_labels = {
-        "api_est": "Pure API",
-        "supergrok": f"SuperGrok ${a.supergrok.sub_usd:g}",
-        "heavy": f"Heavy ${a.heavy.sub_usd:g}",
-    }
+    """One table: base plans + offered promos; single ★ best for window usage."""
+    from .pricing import (
+        DEFAULT_TOPOFF_DISCOUNT_SCENARIOS,
+        DEFAULT_TOPOFF_PACK_USD,
+        ceil_to_pack_usd,
+    )
+
     active_d = float(active_topoff_discount or 0.0)
     api_mo = a.api_est_monthly
-    sg_promo = a.supergrok.sub_usd + a.supergrok.overage_list_usd * (1.0 - active_d)
-    hv_promo = a.heavy.sub_usd + a.heavy.overage_list_usd * (1.0 - active_d)
-    pct = int(round(active_d * 100)) if active_d > 0 else 0
+    ov = max(0.0, float(overage_scale))
+    pack = float(pack_usd) if pack_usd > 0 else DEFAULT_TOPOFF_PACK_USD
+    # Continuous overage face from include math; card math uses pack rounding
+    tops_raw = max(0.0, a.supergrok.overage_list_usd)
+    tops = ceil_to_pack_usd(tops_raw, pack) if tops_raw > 0.5 else 0.0
+    tops_hv_raw = max(0.0, a.heavy.overage_list_usd)
+    tops_hv = ceil_to_pack_usd(tops_hv_raw, pack) if tops_hv_raw > 0.5 else 0.0
+    # SuperGrok/Heavy full monthly with pack-rounded tops
+    sg_full_mo = a.supergrok.sub_usd + tops
+    hv_full_mo = a.heavy.sub_usd + tops_hv
 
-    # Which table row is primary best-fit?
-    if active_d > 0:
-        win_key = min(
-            ("api", api_mo),
-            ("sg_promo", sg_promo),
-            ("hv_promo", hv_promo),
-            key=lambda kv: kv[1],
-        )[0]
-    else:
-        win_key = {
-            "api_est": "api",
-            "supergrok": "sg_full",
-            "heavy": "hv_full",
-        }.get(a.winner, "api")
+    scenarios = [
+        d
+        for d in (
+            topoff_scenarios
+            if topoff_scenarios is not None
+            else list(DEFAULT_TOPOFF_DISCOUNT_SCENARIOS)
+        )
+        if d > 0
+    ]
+    # Candidates: (key, label, monthly, is_promo, discount)
+    cands: list[tuple[str, str, float, bool, float | None]] = []
+    cands.append(("api", "Pure API", api_mo, False, None))
+    cands.append(
+        ("sg_full", f"SuperGrok ${a.supergrok.sub_usd:g}", sg_full_mo, False, None)
+    )
+    cands.append(
+        ("hv_full", f"Heavy ${a.heavy.sub_usd:g}", hv_full_mo, False, None)
+    )
+    for d in scenarios:
+        sg_c = a.supergrok.sub_usd + tops * (1.0 - d)
+        pct = int(round(d * 100))
+        cands.append((f"sg_{pct}", f"SuperGrok @ −{pct}% tops", sg_c, True, d))
+        if tops_hv > 0.5:
+            hv_c = a.heavy.sub_usd + tops_hv * (1.0 - d)
+            cands.append((f"hv_{pct}", f"Heavy @ −{pct}% tops", hv_c, True, d))
+
+    win_key, win_label, win_mo, win_promo, win_d = min(cands, key=lambda c: c[2])
+    full_cands = [c for c in cands if not c[3]]
+    _full_key, full_label, full_mo, _, _ = min(full_cands, key=lambda c: c[2])
 
     console.print()
     t = make_table(
@@ -244,201 +326,336 @@ def print_plan_advisor(
             notes=f"list$ × {a.cash_scale:g}",
             highlight=win_key == "api",
         )
+
+    # Context (not summands): weekly pool est vs pack-rounded tops face
+    pack_note = ""
+    if tops > 0.5 and abs(tops - tops_raw) > 0.5:
+        pack_note = f" · packs ${pack:g}: ${tops_raw:.0f}→${tops:.0f}"
+    elif tops > 0.5:
+        pack_note = f" · packs ${pack:g}"
     sg_note = (
-        f"include ~${a.supergrok.weekly_include_usd:g}/wk"
-        + (
-            f" +${a.supergrok.overage_list_usd:.0f} tops"
-            if a.supergrok.overage_list_usd > 0.5
-            else ""
-        )
+        f"$/mo = sub ${a.supergrok.sub_usd:g}"
+        + (f" + pack tops ${tops:.0f}@list" if tops > 0.5 else "")
+        + f"  [dim]| pool ~${a.supergrok.weekly_include_usd:g}/wk est.[/dim]"
+        + pack_note
     )
+    if tops > a.supergrok.sub_usd * 2:
+        sg_note += " · tops dominate"
     hv_note = (
-        f"include ~${a.heavy.weekly_include_usd:g}/wk"
-        + (
-            f" +${a.heavy.overage_list_usd:.0f} tops"
-            if a.heavy.overage_list_usd > 0.5
-            else " · tops rare"
-        )
+        f"$/mo = sub ${a.heavy.sub_usd:g}"
+        + (f" + pack tops ${tops_hv:.0f}" if tops_hv > 0.5 else " · tops rare")
+        + f"  [dim]| pool ~${a.heavy.weekly_include_usd:g}/wk est.[/dim]"
     )
     _plan_row(
         t,
         option=f"SuperGrok ${a.supergrok.sub_usd:g}",
-        monthly=a.supergrok.monthly,
-        notes=sg_note + " · full-price tops",
+        monthly=sg_full_mo,
+        notes=sg_note,
         highlight=win_key == "sg_full",
     )
     _plan_row(
         t,
         option=f"Heavy ${a.heavy.sub_usd:g}",
-        monthly=a.heavy.monthly,
+        monthly=hv_full_mo,
         notes=hv_note,
         highlight=win_key == "hv_full",
     )
 
-    if active_d > 0:
+    for key, lab, monthly, is_promo, d in cands:
+        if not is_promo or d is None:
+            continue
+        pin = abs(d - active_d) < 1e-9 and active_d > 0
+        note = f"$/mo = sub + pack tops×{1.0 - d:g}"
+        if pin:
+            note += "  ← your --topoff-discount"
+        if key.startswith("hv_"):
+            note = "$/mo = sub + pack tops (promo)"
+            if pin:
+                note += "  ← your --topoff-discount"
         _plan_row(
             t,
-            option=f"SuperGrok @ −{pct}% tops",
-            monthly=sg_promo,
-            notes=f"card = sub + tops×{1.0 - active_d:g}  ← your --topoff-discount",
-            highlight=win_key == "sg_promo",
+            option=lab,
+            monthly=monthly,
+            notes=note,
+            highlight=key == win_key,
         )
-        if a.heavy.overage_list_usd > 0.5:
-            _plan_row(
-                t,
-                option=f"Heavy @ −{pct}% tops",
-                monthly=hv_promo,
-                notes="card if Heavy also buys promo tops",
-                highlight=win_key == "hv_promo",
-            )
+
     console.print(t)
 
-    wlabel = winner_labels.get(a.winner, a.winner)
-
-    if active_d > 0:
-        promo_cands = {
-            "api": ("Pure API", api_mo),
-            "sg_promo": (f"SuperGrok (−{pct}% tops)", sg_promo),
-            "hv_promo": (f"Heavy (−{pct}% tops)", hv_promo),
-        }
-        win_name, win_mo = promo_cands[win_key]
-        promo_save = api_mo - win_mo
+    # Single best-plan blurb — promo dependency in the headline when relevant
+    save_api = api_mo - win_mo
+    if win_promo and win_d is not None:
+        pct = int(round(win_d * 100))
         console.print(
-            f"[bold green]★ Best fit[/bold green] "
-            f"(if pace holds · −{pct}% tops as modeled): "
-            f"[bold]{win_name}[/bold] ~${win_mo:.0f}/mo"
-            + (
-                f"  (~${promo_save:.0f}/mo under Pure API)"
-                if promo_save > 0.5
-                else ""
-            )
+            f"[bold green]★ Best plan for this window’s usage "
+            f"(if −{pct}% pack promo holds):[/bold green] "
+            f"[bold]{win_label}[/bold] ~${win_mo:.0f}/mo"
+            + (f"  (~${save_api:.0f}/mo under Pure API)" if save_api > 0.5 else "")
         )
         console.print(
-            f"  [dim]SuperGrok card ${sg_promo:.0f} = sub ${a.supergrok.sub_usd:g} "
-            f"+ ${a.supergrok.overage_list_usd:.0f} tops × {1.0 - active_d:g}  "
-            f"(e.g. $100 pack → ${100 * (1.0 - active_d):.0f} card)[/dim]"
+            f"  [dim]If promo ends: {full_label} ~${full_mo:.0f}/mo "
+            f"(not the promo row).[/dim]"
         )
-        if a.save_vs_api_est > 0.5:
-            console.print(
-                f"  [dim]Without promo (full-price tops): {wlabel} "
-                f"~${a.save_vs_api_est:.0f}/mo under Pure API[/dim]"
-            )
-        else:
-            console.print(
-                f"  [dim]Without promo (full-price tops): {wlabel}[/dim]"
-            )
-    elif a.save_vs_api_est > 0.5:
+    elif win_key == "api":
         console.print(
-            f"[bold green]★ Best fit[/bold green] "
-            f"(if pace holds, full-price tops): {wlabel}  "
-            f"~${a.save_vs_api_est:.0f}/mo under Pure API"
-        )
-    elif a.save_vs_api_est < -0.5 and a.winner == "api_est":
-        console.print(
-            f"[bold green]★ Best fit[/bold green] (if pace holds): {wlabel}  "
-            f"(paygo · no flat sub)"
+            f"[bold green]★ Best plan for this window’s usage:[/bold green] "
+            f"[bold]{win_label}[/bold] ~${win_mo:.0f}/mo"
         )
     else:
         console.print(
-            f"[bold green]★ Best fit[/bold green] "
-            f"(if pace holds, full-price tops): {wlabel}  "
-            f"(≈ break-even with Pure API)"
+            f"[bold green]★ Best plan for this window’s usage "
+            f"(full-price tops):[/bold green] "
+            f"[bold]{win_label}[/bold] ~${win_mo:.0f}/mo"
+            + (f"  (~${save_api:.0f}/mo under Pure API)" if save_api > 0.5 else "")
         )
 
-    scenarios = topoff_scenarios if topoff_scenarios is not None else [0.0, 0.25, 1.0]
-
-    if not detail:
-        promo_bits: list[str] = []
-        for disc in scenarios:
-            if disc <= 0:
-                continue
-            sg_card = a.supergrok.sub_usd + a.supergrok.overage_list_usd * (1.0 - disc)
-            is_active = abs(disc - active_d) < 1e-9 and disc > 0
-            mark = "*" if is_active else ""
-            short = "free" if disc >= 1.0 - 1e-12 else f"−{int(round(disc * 100))}%"
-            promo_bits.append(f"{short} ${sg_card:.0f}{mark}")
-        if promo_bits and active_d <= 0:
-            # Only show multi-scenario line when no active discount (else already above)
-            console.print(
-                "[dim]SuperGrok card if promo tops[/dim]  "
-                + " · ".join(promo_bits)
-                + f"  [dim](Heavy ~${a.heavy.monthly:.0f}; best-fit = full price)[/dim]"
-            )
-        elif promo_bits and active_d > 0:
-            others = [b for b in promo_bits if not b.endswith("*")]
-            if others:
-                console.print(
-                    "[dim]Other promo scenarios[/dim]  " + " · ".join(others)
-                )
-        console.print(
-            f"[dim]~${a.daily_list:.2f} list$/day · {fmt_tokens(int(a.daily_tokens))} tok/day"
-            f" · quieter months → Pure API safer · pool $ estimated[/dim]"
-        )
-        _print_auth_now_hint(auth_line)
-        return
-
-    t2 = make_table(
-        "Top-off promo (card = sub + tops×(1−discount); best-fit above = full price)",
-        ["Scenario", "SuperGrok", "Heavy", "vs Pure API"],
-    )
-    api_mo = a.api_est_monthly
-    for disc in scenarios:
-        sg_card = a.supergrok.sub_usd + a.supergrok.overage_list_usd * (1.0 - disc)
-        hv_card = a.heavy.sub_usd + a.heavy.overage_list_usd * (1.0 - disc)
-        best_plan = min(sg_card, hv_card)
-        if best_plan + 0.5 < api_mo:
-            vs = f"plan −${api_mo - best_plan:.0f}"
-        elif api_mo + 0.5 < best_plan:
-            vs = f"API −${best_plan - api_mo:.0f}"
-        else:
-            vs = "≈ even"
-        mark = " ★" if abs(disc - float(active_topoff_discount)) < 1e-9 and disc > 0 else ""
-        t2.add_row(
-            f"{topoff_discount_label(disc)}{mark}",
-            f"${sg_card:.0f}",
-            f"${hv_card:.0f}",
-            vs,
-        )
-    console.print()
-    console.print(t2)
-
-    ov = max(0.0, float(overage_scale))
-    face = a.api_list_monthly * ov
-    d25 = face * 0.75
-    be = ""
-    if a.heavy_breakeven_tokens_monthly is not None:
-        be = (
-            f"  ·  Heavy break-even ~"
-            f"{fmt_tokens(int(a.heavy_breakeven_tokens_monthly))} tok/mo"
-        )
-    console.print(
-        f"[dim]Overage lens (all volume @ {ov:g}× list$): "
-        f"face tops ~${face:.0f}/mo"
-        f" · −25% card ~${d25:.0f}"
-        f" · free ~$0"
-        f" (+ SuperGrok sub ${a.supergrok.sub_usd:g})"
-        f"{be}[/dim]"
-    )
+    # Compact one-liner always; deep notes only with --detail
     console.print(
         f"[dim]~${a.daily_list:.2f} list$/day · {fmt_tokens(int(a.daily_tokens))} tok/day"
-        f" · quieter months → Pure API safer · pool $ estimated[/dim]"
+        f" · pack tops ${pack:g}"
+        f" · promos temporary · quieter months → Pure API safer"
+        f"{' · --detail for breakdowns' if not detail else ''}[/dim]"
     )
     _print_auth_now_hint(auth_line)
 
+    if not detail:
+        return
+
+    # --- --detail: attribution, 1.9× source, weeks, hybrid, per-app regime ---
+    if win_promo and win_d is not None:
+        promo_part = tops * win_d
+        structure_part = api_mo - sg_full_mo
+        console.print(
+            f"  [dim]Savings vs Pure API ~${save_api:.0f}/mo ≈ "
+            f"${structure_part:.0f} plan structure (sub+include vs all list$) "
+            f"+ ${promo_part:.0f} promo on pack tops "
+            f"(sub ${a.supergrok.sub_usd:g} + ${tops:.0f}×{1.0 - win_d:g}"
+            + (
+                f"; need ${tops_raw:.0f}→${tops:.0f} @ ${pack:g} packs"
+                if abs(tops - tops_raw) > 0.5
+                else ""
+            )
+            + ").[/dim]"
+        )
+    elif save_api > 0.5:
+        structure_part = api_mo - win_mo
+        console.print(
+            f"  [dim]Savings vs Pure API ~${structure_part:.0f}/mo from "
+            f"subscription + included-pool model (tops@list pack face), "
+            f"not from a measured weekly pool $.[/dim]"
+        )
+
+    if tops > 0.5 and ov > 1.01:
+        tops_hi = ceil_to_pack_usd(tops_raw * ov, pack)
+        sg_full_hi = a.supergrok.sub_usd + tops_hi
+        best_promo_hi = min(
+            (a.supergrok.sub_usd + tops_hi * (1.0 - d), d) for d in scenarios
+        )
+        hi_mo, hi_d = best_promo_hi
+        hi_pct = int(round(hi_d * 100))
+        console.print(
+            f"  [dim]If Extra Credits burn ~{ov:g}× list$ "
+            f"(config cash_scale_supergrok_overage, default {DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE:g}; "
+            f"measured face/list$ on overage windows, not from this table): "
+            f"SuperGrok full ~${sg_full_hi:.0f}/mo; "
+            f"best promo −{hi_pct}% ~${hi_mo:.0f}/mo; "
+            f"Heavy ~${hv_full_mo:.0f}/mo"
+            + (
+                " → Heavy wins if promo ends and burn stays high"
+                if hi_mo > hv_full_mo and sg_full_hi > hv_full_mo
+                else ""
+            )
+            + ".[/dim]"
+        )
+
+    if mix_slices:
+        paths = {getattr(s, "path", "") for s in mix_slices}
+        has_api = "api_key" in paths
+        has_sg = any(p.startswith("supergrok") for p in paths if isinstance(p, str))
+        if has_api and has_sg:
+            console.print(
+                "  [dim]Hybrid tip: window already mixes API + SuperGrok — "
+                "route heavy agent/Build to API key; SuperGrok for interactive.[/dim]"
+            )
+
+    if week_list and len(week_list) >= 1:
+        bits = [f"{wk} ${usd:.0f}" for wk, usd in week_list]
+        vals = [usd for _, usd in week_list]
+        lo, hi = min(vals), max(vals)
+        spread = (
+            f"  range ${lo:.0f}–${hi:.0f}/wk"
+            if len(vals) > 1 and hi - lo > 1
+            else ""
+        )
+        console.print(
+            f"  [dim]Week list$ (pace check): {' · '.join(bits)}{spread}. "
+            f"Point estimate assumes this pace holds.[/dim]"
+        )
+
+    if list_by_key_path:
+        _print_per_app_regime(list_by_key_path, top_n=8)
+
+    face = a.api_list_monthly * ov
+    console.print(
+        f"  [dim]Weekly pool $ is estimated (heavy Build often exhausts early). "
+        f"Overage lens all@×{ov:g}: ~${face:.0f}/mo face before packs/promo. "
+        f"Spend can be burstier than the monthly average.[/dim]"
+    )
+
+
+def _print_per_app_regime(
+    list_by_key_path: dict[str, dict[str, float]],
+    *,
+    top_n: int = 8,
+) -> None:
+    """Per-app list$ share by regime (not the same as 'subscription savings')."""
+    path_labs = {
+        "api_key": "API",
+        "supergrok_pool": "pool",
+        "supergrok_overage": "overage",
+        "supergrok_unknown": "SG(?)",
+        "supergrok_session": "SG",
+        "unknown": "?",
+        "uniform": "uniform",
+    }
+    rows: list[tuple[str, float, dict[str, float]]] = []
+    for key, paths in list_by_key_path.items():
+        tot = sum(paths.values())
+        if tot <= 0:
+            continue
+        rows.append((key, tot, paths))
+    rows.sort(key=lambda r: -r[1])
+    if not rows:
+        return
+    console.print(
+        "  [dim]Per-app regime (list$ share · SG(?) = weekly% unknown → list$ scale, "
+        "not 'no pool benefit'):[/dim]"
+    )
+    for key, tot, paths in rows[:top_n]:
+        names = list(paths.keys())
+        weights = [paths[n] for n in names]
+        pcts = _reconcile_pcts(weights)
+        bits = [
+            f"{path_labs.get(n, n)} {p}%"
+            for n, p in zip(names, pcts, strict=True)
+            if p > 0
+        ]
+        short = key if len(key) <= 36 else key[:35] + "…"
+        console.print(f"    [dim]{short}: list${tot:.0f}  {' · '.join(bits)}[/dim]")
+
+
+def plan_advisor_export(
+    a: PlanAdvisorResult,
+    *,
+    topoff_scenarios: list[float] | None = None,
+    active_topoff_discount: float = 0.0,
+    pack_usd: float = 100.0,
+    overage_scale: float = 1.9,
+    week_list: list[tuple[str, float]] | None = None,
+    list_by_key_path: dict[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    """Structured plan-advisor view for --json (mirrors human table scoring)."""
+    from .pricing import (
+        DEFAULT_TOPOFF_DISCOUNT_SCENARIOS,
+        DEFAULT_TOPOFF_PACK_USD,
+        ceil_to_pack_usd,
+    )
+
+    active_d = float(active_topoff_discount or 0.0)
+    pack = float(pack_usd) if pack_usd > 0 else DEFAULT_TOPOFF_PACK_USD
+    tops_raw = max(0.0, a.supergrok.overage_list_usd)
+    tops = ceil_to_pack_usd(tops_raw, pack) if tops_raw > 0.5 else 0.0
+    tops_hv_raw = max(0.0, a.heavy.overage_list_usd)
+    tops_hv = ceil_to_pack_usd(tops_hv_raw, pack) if tops_hv_raw > 0.5 else 0.0
+    sg_full_mo = a.supergrok.sub_usd + tops
+    hv_full_mo = a.heavy.sub_usd + tops_hv
+    api_mo = a.api_est_monthly
+    scenarios = [
+        d
+        for d in (
+            topoff_scenarios
+            if topoff_scenarios is not None
+            else list(DEFAULT_TOPOFF_DISCOUNT_SCENARIOS)
+        )
+        if d > 0
+    ]
+    candidates: list[dict[str, Any]] = [
+        {"id": "api", "label": "Pure API", "monthly": round(api_mo, 4), "promo": False},
+        {
+            "id": "sg_full",
+            "label": f"SuperGrok ${a.supergrok.sub_usd:g}",
+            "monthly": round(sg_full_mo, 4),
+            "promo": False,
+            "pack_tops_face": tops,
+            "tops_face_raw": tops_raw,
+        },
+        {
+            "id": "hv_full",
+            "label": f"Heavy ${a.heavy.sub_usd:g}",
+            "monthly": round(hv_full_mo, 4),
+            "promo": False,
+        },
+    ]
+    for d in scenarios:
+        pct = int(round(d * 100))
+        candidates.append(
+            {
+                "id": f"sg_{pct}",
+                "label": f"SuperGrok @ −{pct}% tops",
+                "monthly": round(a.supergrok.sub_usd + tops * (1.0 - d), 4),
+                "promo": True,
+                "discount": d,
+            }
+        )
+    best = min(candidates, key=lambda c: c["monthly"])
+    full_best = min(
+        (c for c in candidates if not c.get("promo")), key=lambda c: c["monthly"]
+    )
+    out: dict[str, Any] = {
+        "window_days": a.window_days,
+        "project_days": a.project_days,
+        "pack_usd": pack,
+        "tops_face_raw": round(tops_raw, 4),
+        "tops_face_pack_ceil": round(tops, 4),
+        "candidates": candidates,
+        "best": {
+            **best,
+            "depends_on_promo": bool(best.get("promo")),
+            "save_vs_api": round(api_mo - best["monthly"], 4),
+        },
+        "full_price_fallback": full_best,
+        "overage_scale": ov if (ov := max(0.0, float(overage_scale))) else 1.9,
+        "overage_scale_source": (
+            f"cash_scale_supergrok_overage (default {DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE:g}; "
+            "measured Extra Credit face/list$ on overage windows)"
+        ),
+        "week_list_usd": (
+            [{"week": w, "list_usd": round(u, 4)} for w, u in week_list]
+            if week_list
+            else []
+        ),
+        "list_by_key_path": list_by_key_path or {},
+        "assumptions": {
+            "table_tops_at_list_face_pack_ceil": True,
+            "weekly_include_usd_estimated": True,
+            "promo_temporary": True,
+        },
+    }
+    if best.get("promo") and best.get("discount") is not None:
+        d = float(best["discount"])
+        out["best"]["savings_vs_api"] = {
+            "total": round(api_mo - best["monthly"], 4),
+            "plan_structure_vs_pure_api": round(api_mo - sg_full_mo, 4),
+            "promo_on_pack_tops": round(tops * d, 4),
+        }
+    return out
+
 
 def _print_auth_now_hint(auth_line: str | None) -> None:
+    """Print plan-advisor auth scope line (already plain-language from auth_status)."""
     if not auth_line:
         return
-    if "SuperGrok session" in auth_line:
-        console.print(
-            "[dim]Auth now: SuperGrok session — Pure API is counterfactual "
-            "unless you switch[/dim]"
-        )
-    elif "API key" in auth_line:
-        console.print(
-            "[dim]Auth now: API key — SuperGrok/Heavy are counterfactual "
-            "unless you grok login[/dim]"
-        )
+    console.print(f"[dim]{auth_line}[/dim]")
 
 
 def print_api_breakdown(tot: UsageBucket, rates: TokenRates, rates_label: str) -> None:
@@ -476,7 +693,9 @@ __all__ = [
     "print_api_breakdown",
     "print_auth_block_status",
     "print_auth_mix_summary",
+    "plan_advisor_export",
     "print_plan_advisor",
     "print_token_cost_summary",
     "print_wallet_auth_line",
+    "week_list_series",
 ]

@@ -537,10 +537,12 @@ def test_build_token_cost_window_est_by_key(tmp_path: Path):
 def test_apply_topoff_discount_25_and_100():
     from grok_build_cli_utilities.utils.pricing import (
         apply_topoff_discount,
+        ceil_to_pack_usd,
         resolve_topoff_discount,
         resolve_topoff_discount_scenarios,
         topoff_discount_label,
     )
+    from grok_build_cli_utilities.utils.usage_display import _reconcile_pcts
 
     assert abs(apply_topoff_discount(100.0, 0.25) - 75.0) < 1e-9
     assert abs(apply_topoff_discount(100.0, 1.0) - 0.0) < 1e-9
@@ -551,12 +553,21 @@ def test_apply_topoff_discount_25_and_100():
     d, src = resolve_topoff_discount({"topoff_discount": 0.25})
     assert abs(d - 0.25) < 1e-9
     scenarios = resolve_topoff_discount_scenarios(None)
-    assert scenarios == [0.0, 0.25, 1.0]
+    assert scenarios == [0.20, 0.25, 0.40]
+    assert 0.0 not in scenarios and 1.0 not in scenarios
     scenarios = resolve_topoff_discount_scenarios(
         {"topoff_discount_scenarios": [0.0, 0.4]}, active_discount=0.25
     )
-    assert 0.0 in scenarios and 0.4 in scenarios and 0.25 in scenarios
-    assert "free" in topoff_discount_label(1.0).lower() or "100" in topoff_discount_label(1.0)
+    # 0.0 dropped (full price is base row); 0.4 + active 0.25 kept
+    assert 0.0 not in scenarios and 0.4 in scenarios and 0.25 in scenarios
+    assert "40" in topoff_discount_label(0.40) or "promo" in topoff_discount_label(0.40)
+    # Pack rounding: $380 face → $400 @ $100 packs
+    assert abs(ceil_to_pack_usd(380.0, 100.0) - 400.0) < 1e-9
+    assert abs(ceil_to_pack_usd(100.0, 100.0) - 100.0) < 1e-9
+    assert abs(ceil_to_pack_usd(0.0, 100.0) - 0.0) < 1e-9
+    # Regime % always sum to 100
+    assert sum(_reconcile_pcts([93.4, 5.2, 1.4])) == 100
+    assert sum(_reconcile_pcts([1.0, 1.0, 1.0])) == 100
 
 
 def test_estimate_with_auth_mix_splits_paths():
@@ -784,8 +795,12 @@ def test_usage_cost_plan_advisor_json(tmp_path: Path):
     assert pa is not None
     assert pa["window_days"] == 10
     assert pa["project_days"] == 30
-    assert "supergrok" in pa and "heavy" in pa
-    assert pa["winner"] in ("api_est", "supergrok", "heavy")
+    assert "candidates" in pa and "best" in pa
+    ids = {c["id"] for c in pa["candidates"]}
+    assert "api" in ids and "sg_full" in ids and "hv_full" in ids
+    assert pa["best"]["id"] in ids
+    assert data.get("wallet") is not None
+    assert sum(s.get("list_pct") or 0 for s in data["auth_mix"]["slices"]) == 100
 
 
 def test_usage_cost_from_before_data_warns(tmp_path: Path):

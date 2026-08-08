@@ -27,15 +27,18 @@ from ..utils.pricing import (
     load_plan_advisor_config,
     plan_advisor,
     resolve_topoff_discount_scenarios,
+    resolve_topoff_pack_usd,
 )
 from ..utils.usage_cost_window import api_scale_for_advisor, build_token_cost_window
 from ..utils.usage_display import (
     cfg_overage_scale,
     fmt_tokens,
     format_auth_plan_advisor_line,
+    plan_advisor_export,
     print_api_breakdown,
     print_plan_advisor,
     print_token_cost_summary,
+    week_list_series,
 )
 from ..utils.usage_faq import COST_CAVEATS_LONG
 from ..utils.usage_tokens import (
@@ -719,6 +722,18 @@ def cost_report(
             row = b.to_dict(rates)
             row["list_usd"] = round(list_b, 4)
             row["est_usd"] = round(win.est_for_key(b.key), 4)
+            # Per-app regime list$ shares (reconciled %)
+            path_map = mix.list_by_key_path.get(b.key) or {}
+            if path_map:
+                names = list(path_map.keys())
+                weights = [path_map[n] for n in names]
+                from ..utils.usage_display import _reconcile_pcts
+
+                pcts = _reconcile_pcts(weights)
+                row["regime_list_pct"] = {
+                    n: p for n, p in zip(names, pcts, strict=True) if p > 0
+                }
+                row["regime_list_usd"] = {n: round(path_map[n], 4) for n in names}
             if show_invoice:
                 var = b.ticks * inv_scale
                 row["variable_usd"] = round(var, 4)
@@ -726,6 +741,21 @@ def cost_report(
             if list_price:
                 row["list_price_usd"] = round(list_price_usd(b.ticks), 4)
             top_rows.append(row)
+
+        weeks = week_list_series(records, rates)
+        pack_usd = resolve_topoff_pack_usd(usage_cfg)
+        ov_scale = cfg_overage_scale(usage_cfg)
+        plan_export = None
+        if advisor is not None:
+            plan_export = plan_advisor_export(
+                advisor,
+                topoff_scenarios=topoff_scenarios,
+                active_topoff_discount=topoff_d,
+                pack_usd=pack_usd,
+                overage_scale=ov_scale,
+                week_list=weeks,
+                list_by_key_path=dict(mix.list_by_key_path),
+            )
 
         payload = {
             "mode": "tokens",
@@ -742,16 +772,23 @@ def cost_report(
             "cash_scale_source": cash_scale_src,
             "topoff_discount": topoff_d,
             "topoff_discount_source": topoff_src,
+            "topoff_pack_usd": pack_usd,
             "effective_rates": (
                 effective_rates(rates, cash_scale_val).as_dict()
                 if force_uniform is not None and cash_scale_val > 0
                 else None
             ),
             "auth": auth_st.as_dict(),
+            "wallet": {
+                "extra_credits_remaining_usd": prepaid_balance,
+                "weekly_supergrok_limit_pct_used": weekly_pct,
+                "auth_path": auth_st.effective,
+            },
             "weekly_usage_pct": weekly_pct,
             "prepaid_balance_usd": prepaid_balance,
             "topoff_discount_scenarios": topoff_scenarios,
             "auth_mix": mix.as_dict(),
+            "week_list_usd": [{"week": w, "list_usd": round(u, 4)} for w, u in weeks],
             "totals": {
                 **tot.to_dict(rates),
                 "list_usd": round(list_total, 4),
@@ -771,7 +808,9 @@ def cost_report(
                 else None
             ),
             "buckets": top_rows,
-            "plan_advisor": advisor.as_dict() if advisor else None,
+            "plan_advisor": plan_export if plan_export else (
+                advisor.as_dict() if advisor else None
+            ),
             "caveats": [
                 "list$_is_pure_api_list_rates",
                 "est$_uses_auth_timeline_mix_unless_uniform_override",
@@ -856,6 +895,10 @@ def cost_report(
             topoff_scenarios=topoff_scenarios,
             active_topoff_discount=topoff_d,
             detail=detail,
+            mix_slices=list(mix.slices),
+            pack_usd=resolve_topoff_pack_usd(usage_cfg),
+            week_list=week_list_series(records, rates),
+            list_by_key_path=dict(mix.list_by_key_path),
         )
 
     if detail:
