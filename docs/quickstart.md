@@ -83,25 +83,22 @@ Backups always include a SHA-256 manifest.
 ### 6. Usage analytics & cost awareness
 
 ```bash
-grok-utils usage report --by project --top 8
-# Token path: list$ + est$ (same cash_scale as usage cost)
-grok-utils usage report --by app --from 2026-08-01 -m grok-4.5
-grok-utils usage report --tokens --by app --from 2026-08-01 --to 2026-08-05
+grok-utils usage report --by project --top 8   # legacy: sessions/messages
+grok-utils usage report --by app --from 2026-08-01 -m grok-4.5   # list$/est$ (short names)
+grok-utils usage report --by day --tokens --from 2026-08-01      # list$/est$ by day
 
 grok-utils usage top-projects
 grok-utils usage models
 grok-utils usage timeline --days 30
 
-# Token-accurate cost: list$ + est$ (cash_scale default or toml)
+# Token-accurate cost: list$ + path/regime est$
 grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.5
-# From a date through latest sessions (omit --to)
 grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
-# Plan advisor: API vs SuperGrok vs Heavy for this intensity
 grok-utils usage cost --from 2026-07-18 --by app -m grok-4.5 --plan-advisor
-# Optional day-to-day default in ~/.grok/grok-utils.toml → [usage] cash_scale = 0.57
 grok-utils usage cost --from 2026-08-01 --by app --api-estimate
 grok-utils usage cost --by app --invoice-usd 180 --fixed-usd 30
-grok-utils usage info   # cash_scale toml, plan-advisor, ledger caveats
+grok-utils usage info   # FAQ, ledgers, plan-advisor knobs
+grok-utils auth status  # Extra Credits $ · weekly % · auth path
 ```
 
 ### 7. MCP, plugins, hooks, config

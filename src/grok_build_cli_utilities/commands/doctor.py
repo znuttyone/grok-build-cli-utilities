@@ -10,6 +10,7 @@ from typing import Any
 import typer
 
 from .. import __version__
+from ..utils.auth_status import detect_auth, load_billing_snapshot
 from ..utils.common import (
     console,
     get_grok_home,
@@ -99,6 +100,28 @@ def doctor(
         }
     )
     checks.append({"name": "grok-utils", "status": "✓", "detail": f"v{__version__} (importable)"})
+
+    # Auth path (SuperGrok session vs API key) + optional wallet snapshot
+    try:
+        auth = detect_auth(grok_home)
+        if auth.effective == "none":
+            a_status = "⚠"
+        else:
+            a_status = "✓"
+        detail = auth.label
+        bill = load_billing_snapshot(grok_home)
+        bits: list[str] = []
+        if bill.prepaid_usd is not None:
+            bits.append(f"credits ${bill.prepaid_usd:.2f}")
+        if bill.weekly_pct is not None:
+            bits.append(f"weekly {bill.weekly_pct:g}%")
+        if bits:
+            detail = f"{detail} · {' · '.join(bits)}"
+        elif auth.notes:
+            detail = f"{detail} · {auth.notes[0][:40]}"
+        checks.append({"name": "Auth path", "status": a_status, "detail": detail[:80]})
+    except Exception as e:  # best-effort doctor row
+        checks.append({"name": "Auth path", "status": "⚠", "detail": f"check failed: {e}"[:60]})
 
     # Grok home
     status, detail = _check_exists(grok_home, "Grok home")
@@ -209,8 +232,10 @@ def doctor(
         warn(f"{len(missing)} items with warnings or errors above.")
         info("Use --grok-home to point at a different installation.")
         info("Many commands are safe-by-default (dry-run) even if setup is partial.")
+        info("Auth path detail: grok-utils auth status   ·   history: auth status --history")
 
     # Quick tips
     console.print(
-        "\n[dim]Tips: grok-utils sessions list | usage report | skills list | backup create --help[/dim]"
+        "\n[dim]Tips: sessions list | usage report --by app | auth status | "
+        "backup create --help[/dim]"
     )

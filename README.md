@@ -23,7 +23,7 @@ A powerful, batteries-included collection of command-line tools that make you dr
 - Scriptable with `--json`
 - Zero-config — just works
 
-**New in 0.4.0**: token-accurate `usage cost` / `usage report` with **list$ + est$** (cash_scale), **`--plan-advisor`**, open-ended date filters, novice FAQ (`usage info`), and clearer cost help.
+**New in 0.4.0+**: token-accurate `usage cost` / `usage report` with **list$ + path/regime est$**, **`--plan-advisor`**, wallet snapshot, open-ended dates, FAQ (`usage info`).
 
 **Sole author & maintainer:** Cobus Greyling
 
@@ -124,21 +124,20 @@ grok-utils backup restore ... --no-dry-run --force
 - Core state always included: config, skills, user-settings, memory, plugins, etc.
 - Restore is dry-run by default. Extremely safe.
 
-### 4. `usage` — Stunning analytics & productivity insights
+### 4. `usage` — Analytics & cost awareness
 
 ```bash
-grok-utils usage report --by project --top 8
-grok-utils usage report --by model --since 2026-05-01
+grok-utils usage report --by app --from 2026-08-01          # list$/est$ (default)
+grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5 -P
+grok-utils auth status                                       # Extra Credits + weekly %
 grok-utils usage top-projects
-grok-utils usage models
 grok-utils usage timeline --days 21
 ```
 
-- Grouped reports with visual share bars (`████░░░░`)
-- Unicode sparklines for recent activity
-- Daily timeline
-- Model distribution
-- JSON output for feeding into other tools or dashboards
+- Token-accurate **list$** + path/regime **est$** (auth mix)
+- Plan-advisor: Pure API vs SuperGrok vs Heavy
+- Wallet footer / `auth status` snapshot
+- Share bars, sparklines, JSON
 
 ### 5. `mcp` — MCP server superpowers
 
@@ -189,7 +188,9 @@ grok-utils config paths
 grok-utils logs tail --level error -n 20
 grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app --api-estimate
 grok-utils usage cost --invoice-usd 180 --fixed-usd 30 --by app
-grok-utils usage report --tokens --by app
+grok-utils usage report --by app --from 2026-08-01
+# list$/est$ by day (here --tokens is required):
+# grok-utils usage report --by day --tokens --from 2026-08-01
 grok-utils sessions export <id> --format html -o out.html
 grok-utils sessions analyze <id>
 ```

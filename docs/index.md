@@ -235,8 +235,8 @@ title: grok-utils
             <div class="font-semibold text-lg text-white tracking-tight">usage</div>
             <span class="grok-tag">Analytics</span>
           </div>
-          <p class="text-sm text-zinc-400 mb-4">Stunning reports, sparklines, timelines, model breakdowns + rough cost estimates. Group by project or model.</p>
-          <div class="grok-code text-xs text-emerald-300 mb-2">grok-utils usage report --by project --top 8</div>
+          <p class="text-sm text-zinc-400 mb-4">Token-accurate list$/est$ reports, sparklines, plan-advisor (API vs SuperGrok vs Heavy), wallet snapshot.</p>
+          <div class="grok-code text-xs text-emerald-300 mb-2">grok-utils usage report --by app --from 2026-08-01</div>
           <div class="grok-code text-xs text-emerald-300">grok-utils usage cost --by model</div>
         </div>
 
@@ -294,8 +294,8 @@ title: grok-utils
     <div class="grok-card">
       <div class="grok-tag-flagship mb-3 inline-block">DAILY DRIVER</div>
       <h3 class="text-xl font-semibold text-white tracking-tight mb-2">Usage + Cost awareness</h3>
-      <p class="text-zinc-400 text-sm mb-3">Visual reports with unicode bars and sparklines. Model and project breakdowns. Rough cost estimates to spot expensive work early.</p>
-      <div class="text-xs text-zinc-500">grok-utils usage report --by project • grok-utils usage cost --by model</div>
+      <p class="text-zinc-400 text-sm mb-3">list$ + path/regime est$, unicode bars, plan-advisor. Auth mix and Extra Credits wallet on the footer.</p>
+      <div class="text-xs text-zinc-500">grok-utils usage report --by app • grok-utils usage cost -P • grok-utils auth status</div>
     </div>
   </div>
 </div>

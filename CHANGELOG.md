@@ -5,8 +5,20 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **`grok-utils auth status`**: SuperGrok session vs API key; optional `--history`; **Extra Credits $** + **weekly %** from billing log.
+- Auth path + wallet snapshot on `usage cost` footer / JSON (`prepaid_balance_usd`, `weekly_usage_pct`).
+- **Path/regime cash scales**: API 1.0, SuperGrok pool 0.0, overage 1.9; weekly% unknown → list$ scale + caveat.
+- **`--topoff-discount` 0..1** (toml `topoff_discount`; **1.0** = free tops); plan-advisor promo table **full / −25% / free** (`topoff_discount_scenarios`).
+- `est_cash$` = est$ × (1 − discount) when promo modeled; primary plan “best fit” stays full price.
 
 ### Changed
+- Default est$ is path/regime-aware (not a single 0.57 blend). Multi-day blends remain optional via `--cash-scale` / prepaid-fit.
+- Top-off discount clamp is **0..1** (was 0..0.95) so free-credit scenarios work.
+- **`usage cost` human output simplified**: compact TOTALS / est$ mix / wallet line; plan-advisor collapses duplicate Pure API rows; **`--detail` / `-v`** adds promo table + overage one-liner only (long caveats → `usage info`).
+- **`usage report` token path** aligned with cost: auth-mix est$, **Share(list$)**, compact wallet/footer (no empty Share bars when SuperGrok pool scale is 0).
+- **Refactor**: shared `build_token_cost_window` for cost + report; one-pass per-key est$; single billing log parse (`load_billing_snapshot`); FAQ moved to `usage_faq.py`; display helpers in `usage_display.py`; legacy report/rough → `usage_legacy.py`.
+- **`usage report` default `--by app`** (short names + list$/est$). SuperGrok est$ mix splits pool / overage / unknown regimes.
+- **Doctor** Auth path row includes Extra Credits $ + weekly % when billing log has them.
 
 ## [0.4.0] - 2026-08-06
 

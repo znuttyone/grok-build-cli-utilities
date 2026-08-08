@@ -1,0 +1,122 @@
+"""grok-utils auth - SuperGrok session vs API key path."""
+
+from __future__ import annotations
+
+import json
+
+import typer
+
+from ..utils.auth_status import (
+    auth_history_change_points,
+    detect_auth,
+    latest_prepaid_balance_usd,
+    latest_weekly_usage_percent,
+    load_auth_history,
+)
+from ..utils.common import console, get_grok_home, make_table, warn
+
+app = typer.Typer(help="Grok Build auth path (SuperGrok session vs API key)", no_args_is_help=True)
+
+
+@app.command("status")
+def auth_status(
+    ctx: typer.Context,
+    history: bool = typer.Option(
+        False,
+        "--history",
+        help="Also show auth method change-points from ~/.grok/logs/unified.jsonl",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Show effective auth path (offline; similar to /session-info Auth method).
+
+    SuperGrok login session (auth.json / cached_token) wins over XAI_API_KEY
+    unless config has [auth] preferred_method = \"api_key\".
+    """
+    grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
+    status = detect_auth(grok_home)
+
+    hist_events = load_auth_history(grok_home) if history else []
+    changes = auth_history_change_points(hist_events) if hist_events else []
+    prepaid = latest_prepaid_balance_usd(grok_home)
+    weekly_pct = latest_weekly_usage_percent(grok_home)
+
+    if json_out:
+        payload = {
+            "auth": status.as_dict(),
+            "extra_credits_usd": prepaid,
+            "weekly_usage_pct": weekly_pct,
+            "history": [e.as_dict() for e in changes] if history else None,
+            "history_event_count": len(hist_events) if history else None,
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    console.print("[bold]Grok Build auth path[/bold] (this machine · now)\n")
+    console.print(f"  Effective: [cyan]{status.label}[/cyan]  ({status.effective})")
+    console.print(f"  Session file: {status.session_path}")
+    console.print(f"  Session credentials present: {'yes' if status.session_present else 'no'}")
+    if status.session_email:
+        console.print(f"  Signed in as: {status.session_email}")
+    console.print(
+        f"  XAI_API_KEY env: {'set' if status.api_key_env_present else 'not set'}"
+    )
+    console.print(
+        f"  preferred_method: {status.preferred_method or '(not set in config.toml)'}"
+    )
+    console.print(f"\n  Spend lens: {status.spend_hint}")
+    for n in status.notes:
+        console.print(f"  [dim]• {n}[/dim]")
+
+    # Billing snapshot from unified.jsonl (same source as SuperGrok Usage panel)
+    console.print("\n[bold]SuperGrok wallet snapshot[/bold] [dim](from billing log)[/dim]")
+    if prepaid is not None:
+        console.print(f"  Extra Credits: [cyan]${prepaid:.2f}[/cyan]")
+    else:
+        console.print("  Extra Credits: [dim](no billing sample in logs yet)[/dim]")
+    if weekly_pct is not None:
+        console.print(f"  Weekly SuperGrok limit: [cyan]{weekly_pct:g}%[/cyan] used")
+    else:
+        console.print("  Weekly SuperGrok limit: [dim](no billing sample in logs yet)[/dim]")
+    console.print(
+        "  [dim]Best-effort last fetch from ~/.grok/logs/unified.jsonl — "
+        "not live network; stale until Build refetches billing.[/dim]"
+    )
+
+    console.print()
+    console.print(
+        "Override to force API when logged in:\n"
+        "  # ~/.grok/config.toml\n"
+        '  [auth]\n'
+        '  preferred_method = "api_key"\n'
+        "  # or remove ~/.grok/auth.json (recreated if you grok login again)",
+        style="dim",
+        markup=False,
+    )
+    console.print(
+        "\nAuth method is not stored on turn usage files. "
+        "History is best-effort process-level only: "
+        "grok-utils auth status --history",
+        style="dim",
+        markup=False,
+    )
+
+    if history:
+        if not hist_events:
+            warn("No auth method events found in logs/unified.jsonl (missing or truncated).")
+            return
+        console.print(
+            f"\n[bold]Auth history[/bold] "
+            f"({len(hist_events)} events in log scan · {len(changes)} change-points)\n"
+        )
+        t = make_table(
+            "Auth method change-points (from unified.jsonl)",
+            ["When", "Method", "Log msg"],
+        )
+        for ev in changes[-30:]:
+            t.add_row(ev.ts or "?", ev.method_id, ev.source_msg[:48])
+        console.print(t)
+        console.print(
+            "[dim]cached_token ≈ SuperGrok session · xai.api_key ≈ API key path. "
+            "Process-level events, not per-turn billing.[/dim]"
+        )

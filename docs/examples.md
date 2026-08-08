@@ -5,11 +5,12 @@ Real terminal output is the best experience (`grok-utils usage report`, `session
 ## Common one-liners
 
 ```bash
-# Daily standup view
-grok-utils usage report --by project --top 5 && grok-utils sessions list -l 5
+# Daily standup view (list$/est$ by short app name)
+grok-utils usage report --by app --from 2026-08-01 && grok-utils sessions list -l 5
+# Legacy session counts: grok-utils usage report --by project --top 5
 
 # Find expensive recent work
-grok-utils usage cost --by project --since 2026-05-20
+grok-utils usage cost --by app --from 2026-08-01
 
 # Clean up after deleting a worktree
 cd /path/to/parent/repo

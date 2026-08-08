@@ -11,6 +11,9 @@ from typer.testing import CliRunner
 from grok_build_cli_utilities.cli import app
 from grok_build_cli_utilities.utils.pricing import (
     DEFAULT_CASH_SCALE,
+    DEFAULT_CASH_SCALE_API,
+    DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE,
+    DEFAULT_CASH_SCALE_SUPERGROK_POOL,
     DEFAULT_HEAVY_USD,
     DEFAULT_HEAVY_WEEKLY_INCLUDE_USD,
     DEFAULT_SUPERGROK_USD,
@@ -18,6 +21,7 @@ from grok_build_cli_utilities.utils.pricing import (
     effective_rates,
     plan_advisor,
     rates_for_model,
+    resolve_cash_scale,
 )
 from grok_build_cli_utilities.utils.usage_tokens import (
     PaygoTypeUsd,
@@ -324,12 +328,18 @@ def test_usage_report_tokens(tmp_path: Path):
         ticks=1000,
     )
     r = runner.invoke(
-        app, ["-g", str(grok), "usage", "report", "--tokens", "--by", "app", "--json"]
+        app, ["-g", str(grok), "usage", "report", "--by", "app", "--json"]
     )
     assert r.exit_code == 0, r.output
     data = _json_from_cli(r)
     assert data["mode"] == "tokens"
     assert data["totals"]["prompts"] == 1
+    # Redundant --tokens with --by app should warn but still succeed
+    r2 = runner.invoke(
+        app, ["-g", str(grok), "usage", "report", "--tokens", "--by", "app", "--json"]
+    )
+    assert r2.exit_code == 0, r2.output
+    assert "ignored" in (r2.output + r2.stderr).lower()
 
 
 def test_usage_info():
@@ -423,7 +433,220 @@ def test_effective_rates_uniform_scale():
     assert abs(eff.uncached_input - 2.0 * 0.5656) < 1e-9
     assert abs(eff.cached_input - 0.3 * 0.5656) < 1e-9
     assert abs(eff.output - 6.0 * 0.5656) < 1e-9
-    assert DEFAULT_CASH_SCALE == 0.57
+    assert DEFAULT_CASH_SCALE == DEFAULT_CASH_SCALE_API == 1.0
+    assert DEFAULT_CASH_SCALE_SUPERGROK_POOL == 0.0
+    assert DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE == 1.9
+
+
+def test_resolve_cash_scale_by_auth_path():
+    s, src = resolve_cash_scale(auth_effective="api_key")
+    assert s == 1.0
+    assert "api_key" in src
+    s, src = resolve_cash_scale(
+        auth_effective="supergrok_session", weekly_usage_pct=10.0
+    )
+    assert s == 0.0
+    assert "pool" in src
+    s, src = resolve_cash_scale(
+        auth_effective="supergrok_session", weekly_usage_pct=100.0
+    )
+    assert s == 1.9
+    assert "overage" in src
+    s, src = resolve_cash_scale(
+        auth_effective="supergrok_session", weekly_usage_pct=None
+    )
+    assert s == 1.0
+    assert "unknown" in src
+
+
+def test_build_token_cost_window_est_by_key(tmp_path: Path):
+    """Shared builder: one-pass est_by_key matches totals; regimes split."""
+    from datetime import datetime, timezone
+
+    from grok_build_cli_utilities.utils.auth_status import AuthHistoryEvent
+    from grok_build_cli_utilities.utils.pricing import estimate_with_auth_mix, rates_for_model
+    from grok_build_cli_utilities.utils.usage_cost_window import build_token_cost_window
+    from grok_build_cli_utilities.utils.usage_tokens import UsageRec, load_turn_usage
+
+    grok = tmp_path / ".grok"
+    sess = grok / "sessions" / "AppX" / "s1"
+    sess.mkdir(parents=True)
+    (grok / "auth.json").write_text(
+        '{"access_token": "' + "x" * 40 + '"}', encoding="utf-8"
+    )
+    _write_turn(
+        sess / "updates.jsonl",
+        prompt_id="p1",
+        ts="2026-08-07T12:00:00Z",
+        input_t=1_000_000,
+        output_t=0,
+        cached=1_000_000,
+        reasoning=0,
+        ticks=1,
+        total=1_000_000,
+    )
+    records = load_turn_usage(grok / "sessions")
+    win = build_token_cost_window(
+        grok, records, group="app", rates_model="grok-4.5"
+    )
+    assert win.list_total > 0
+    assert win.est_by_key
+    assert abs(sum(win.est_by_key.values()) - win.est_total) < 1e-6
+
+    # Regime split: pool + overage as separate paths
+    rates = rates_for_model("grok-4.5")
+    r_pool = UsageRec(
+        prompt_id="pool",
+        ts=datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc),
+        project="A",
+        cwd="/A",
+        session_id="s",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    r_ov = UsageRec(
+        prompt_id="ov",
+        ts=datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc),
+        project="A",
+        cwd="/A",
+        session_id="s",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    pts = [AuthHistoryEvent("2026-08-01T00:00:00+00:00", "cached_token", "sel")]
+    weekly_tl = [
+        (datetime(2026, 8, 6, 11, 0, tzinfo=timezone.utc), 100.0),
+        (datetime(2026, 8, 7, 11, 0, tzinfo=timezone.utc), 10.0),
+    ]
+    mix = estimate_with_auth_mix(
+        [r_pool, r_ov],
+        rates,
+        change_points=pts,
+        weekly_timeline=weekly_tl,
+        fallback_auth="supergrok_session",
+        group_key_fn=lambda r: r.project,
+    )
+    paths = {s.path for s in mix.slices}
+    assert "supergrok_pool" in paths
+    assert "supergrok_overage" in paths
+    assert abs(mix.est_by_key["A"] - mix.est_total) < 1e-6
+
+
+def test_apply_topoff_discount_25_and_100():
+    from grok_build_cli_utilities.utils.pricing import (
+        apply_topoff_discount,
+        resolve_topoff_discount,
+        resolve_topoff_discount_scenarios,
+        topoff_discount_label,
+    )
+
+    assert abs(apply_topoff_discount(100.0, 0.25) - 75.0) < 1e-9
+    assert abs(apply_topoff_discount(100.0, 1.0) - 0.0) < 1e-9
+    assert abs(apply_topoff_discount(100.0, 1.5) - 0.0) < 1e-9  # clamp to 1.0
+    d, src = resolve_topoff_discount(cli_discount=1.0)
+    assert d == 1.0
+    assert "1" in src
+    d, src = resolve_topoff_discount({"topoff_discount": 0.25})
+    assert abs(d - 0.25) < 1e-9
+    scenarios = resolve_topoff_discount_scenarios(None)
+    assert scenarios == [0.0, 0.25, 1.0]
+    scenarios = resolve_topoff_discount_scenarios(
+        {"topoff_discount_scenarios": [0.0, 0.4]}, active_discount=0.25
+    )
+    assert 0.0 in scenarios and 0.4 in scenarios and 0.25 in scenarios
+    assert "free" in topoff_discount_label(1.0).lower() or "100" in topoff_discount_label(1.0)
+
+
+def test_estimate_with_auth_mix_splits_paths():
+    from datetime import datetime, timezone
+
+    from grok_build_cli_utilities.utils.auth_status import AuthHistoryEvent
+    from grok_build_cli_utilities.utils.pricing import estimate_with_auth_mix
+    from grok_build_cli_utilities.utils.usage_tokens import UsageRec
+
+    rates = rates_for_model("grok-4.5")
+    # 1M cached only → list$ 0.30 each
+    r_sg = UsageRec(
+        prompt_id="a",
+        ts=datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc),
+        project="A",
+        cwd="/A",
+        session_id="s1",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    r_api = UsageRec(
+        prompt_id="b",
+        ts=datetime(2026, 8, 7, 16, 0, tzinfo=timezone.utc),
+        project="A",
+        cwd="/A",
+        session_id="s1",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    pts = [
+        AuthHistoryEvent("2026-08-06T10:00:00+00:00", "cached_token", "sel"),
+        AuthHistoryEvent("2026-08-07T15:00:00+00:00", "xai.api_key", "sel"),
+    ]
+    # Per-turn weekly timeline: SuperGrok hour at 100% overage, not current 10%
+    weekly_tl = [
+        (datetime(2026, 8, 6, 11, 0, tzinfo=timezone.utc), 100.0),
+        (datetime(2026, 8, 7, 14, 0, tzinfo=timezone.utc), 10.0),
+    ]
+    mix = estimate_with_auth_mix(
+        [r_sg, r_api],
+        rates,
+        change_points=pts,
+        weekly_usage_pct=10.0,  # "current" — must NOT zero historical SuperGrok
+        weekly_timeline=weekly_tl,
+        fallback_auth="supergrok_session",
+    )
+    assert mix.source == "auth_mix"
+    by_path = {s.path: s for s in mix.slices}
+    # SuperGrok at 100% weekly → overage slice (regime-split path)
+    assert "supergrok_overage" in by_path
+    assert "api_key" in by_path
+    assert abs(by_path["supergrok_overage"].est_usd - 0.30 * 1.9) < 1e-6
+    assert abs(by_path["api_key"].est_usd - 0.30) < 1e-6
+    assert abs(mix.est_total - (0.30 * 1.9 + 0.30)) < 1e-6
+
+
+def test_historical_supergrok_without_weekly_uses_list_unknown():
+    """Before billing log samples, SuperGrok must not invent pool 0 or overage 1.9."""
+    from datetime import datetime, timezone
+
+    from grok_build_cli_utilities.utils.auth_status import AuthHistoryEvent
+    from grok_build_cli_utilities.utils.pricing import estimate_with_auth_mix
+    from grok_build_cli_utilities.utils.usage_tokens import UsageRec
+
+    rates = rates_for_model("grok-4.5")
+    r = UsageRec(
+        prompt_id="old",
+        ts=datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc),
+        project="A",
+        cwd="/A",
+        session_id="s1",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    pts = [AuthHistoryEvent("2026-08-01T00:00:00+00:00", "cached_token", "sel")]
+    # weekly timeline only starts Aug 6; Aug 3 has no sample → unknown@list 1.0
+    weekly_tl = [(datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc), 100.0)]
+    mix = estimate_with_auth_mix(
+        [r],
+        rates,
+        change_points=pts,
+        weekly_usage_pct=8.0,
+        weekly_timeline=weekly_tl,
+        fallback_auth="supergrok_session",
+    )
+    assert abs(mix.est_total - 0.30 * 1.0) < 1e-6
+    assert mix.slices and mix.slices[0].path == "supergrok_unknown"
 
 
 def test_plan_advisor_high_volume_prefers_heavy():

@@ -29,9 +29,13 @@ subscription cash and may not match a specific paygo key's effective mix.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# Re-export FAQ constants for older imports (canonical home: usage_faq.py)
+from .usage_faq import COST_CAVEATS_LONG as COST_CAVEATS_LONG  # noqa: F401
+from .usage_faq import COST_CAVEATS_SHORT as COST_CAVEATS_SHORT  # noqa: F401
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,8 @@ class TokenRates:
 
 
 # --- List rates (USD / 1M), standard context (≤200k). Long-context 2× not applied in v1. ---
-# grok-4.5 console Pricing (2026-08-05 screenshot): $2 / $0.30 / $6 (≤200k); $4 / $0.60 / $12 (>200k)
+# grok-4.5 console Pricing (2026-08-05): $2 / $0.30 / $6 (≤200k);
+# long-context tier $4 / $0.60 / $12 (>200k) not applied in v1.
 GROK_45_RATES = TokenRates(2.00, 0.30, 6.00, label="grok-4.5")
 GROK_BUILD_RATES = TokenRates(1.00, 0.20, 2.00, label="grok-build-0.1")
 GROK_43_RATES = TokenRates(1.25, 0.20, 2.50, label="grok-4.3")
@@ -120,10 +125,19 @@ def list_rate_profiles() -> list[str]:
     return preferred
 
 
-# Spend-oriented scale: list$ (pure API rates × local tokens) overstates prepaid burn.
-# Measured: $60 prepaid − $16.46 remaining → burn $43.54 / list$ $76.97 ≈ 0.57
-# (Aug 1–5 2026, grok-4.5 list rates, high cache). Tune via config or CLI.
-DEFAULT_CASH_SCALE = 0.57
+# Spend-oriented scales: est$ = list$ × scale.
+# API path: full list rates (scale 1.0).
+# SuperGrok included weekly pool: prepaid often barely moves (scale ~0).
+# SuperGrok overage (weekly ~100%): extra credits burn ~1.9× list$ (measured Aug 2026).
+# Blended 0.57 was multi-day pool+overage — kept only as optional legacy override.
+DEFAULT_CASH_SCALE_API = 1.0
+DEFAULT_CASH_SCALE_SUPERGROK_POOL = 0.0
+DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE = 1.9
+DEFAULT_TOPOFF_DISCOUNT = 0.0  # full pack price; set 0.20/0.25/0.40 only during promo
+# Ultimate fallback if auth unknown
+DEFAULT_CASH_SCALE = DEFAULT_CASH_SCALE_API
+# Weekly usage % at/above this → treat SuperGrok as overage (extra credits)
+OVERAGE_WEEKLY_PCT_THRESHOLD = 99.0
 
 
 def apply_cash_scale(list_usd: float, scale: float) -> float:
@@ -131,6 +145,32 @@ def apply_cash_scale(list_usd: float, scale: float) -> float:
     if scale < 0:
         scale = 0.0
     return float(list_usd) * float(scale)
+
+
+def apply_topoff_discount(credit_usd: float, discount: float) -> float:
+    """Card $ ≈ credit face $ × (1 − discount). discount 0 = full price, 1.0 = free tops."""
+    d = clamp_topoff_discount(discount)
+    return float(credit_usd) * (1.0 - d)
+
+
+def clamp_topoff_discount(discount: float) -> float:
+    """Promo fraction in [0, 1]. 1.0 = free Extra Credits top-ups (card $0)."""
+    return min(max(float(discount), 0.0), 1.0)
+
+
+# Default plan-advisor card scenarios: full price, −25%, free tops (−100%).
+DEFAULT_TOPOFF_DISCOUNT_SCENARIOS: tuple[float, ...] = (0.0, 0.25, 1.0)
+
+
+def topoff_discount_label(discount: float) -> str:
+    """Human label for a top-off promo fraction."""
+    d = clamp_topoff_discount(discount)
+    if d <= 0:
+        return "full price tops"
+    if d >= 1.0 - 1e-12:
+        return "promo −100% (free tops)"
+    pct = int(round(d * 100))
+    return f"promo −{pct}%"
 
 
 def effective_rates(rates: TokenRates, scale: float) -> TokenRates:
@@ -144,6 +184,19 @@ def effective_rates(rates: TokenRates, scale: float) -> TokenRates:
     )
 
 
+def cfg_float(cfg: dict[str, Any], key: str, default: float) -> float:
+    """Parse a float from usage config with a default."""
+    raw = cfg.get(key, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+# Back-compat alias (older call sites)
+_cfg_float = cfg_float
+
+
 def resolve_cash_scale(
     *,
     cli_scale: float | None = None,
@@ -151,15 +204,22 @@ def resolve_cash_scale(
     credits_remaining: float | None = None,
     list_total_usd: float | None = None,
     config_scale: float | None = None,
+    usage_cfg: dict[str, Any] | None = None,
+    auth_effective: str | None = None,
+    weekly_usage_pct: float | None = None,
+    regime_override: str | None = None,
 ) -> tuple[float, str]:
     """Resolve cash scale and a short source label.
 
     Priority:
       1. --prepaid-usd + --credits-remaining + list_total → burn/list
       2. --cash-scale
-      3. config cash_scale
-      4. DEFAULT_CASH_SCALE
+      3. config cash_scale (force one number)
+      4. path + SuperGrok regime from auth / weekly % / toml
+      5. DEFAULT_CASH_SCALE_API (1.0)
     """
+    cfg = usage_cfg or {}
+
     if (
         prepaid_usd is not None
         and credits_remaining is not None
@@ -178,7 +238,342 @@ def resolve_cash_scale(
     if config_scale is not None:
         return float(config_scale), f"config cash_scale={config_scale:g}"
 
-    return DEFAULT_CASH_SCALE, f"default {DEFAULT_CASH_SCALE:g}"
+    # Explicit single key in toml already handled via config_scale by callers;
+    # also accept if passed inside usage_cfg only:
+    if "cash_scale" in cfg and cfg.get("cash_scale") is not None:
+        try:
+            v = float(cfg["cash_scale"])
+            return v, f"config cash_scale={v:g}"
+        except (TypeError, ValueError):
+            pass
+
+    scale_api = _cfg_float(cfg, "cash_scale_api", DEFAULT_CASH_SCALE_API)
+    scale_pool = _cfg_float(
+        cfg, "cash_scale_supergrok_pool", DEFAULT_CASH_SCALE_SUPERGROK_POOL
+    )
+    scale_ov = _cfg_float(
+        cfg, "cash_scale_supergrok_overage", DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE
+    )
+
+    regime = (regime_override or str(cfg.get("supergrok_regime") or "auto")).lower().strip()
+    auth = (auth_effective or "none").lower().strip()
+
+    if auth == "api_key":
+        return scale_api, f"api_key scale={scale_api:g}"
+
+    if auth == "supergrok_session":
+        use_overage = False
+        if regime in ("overage", "extra", "credits"):
+            use_overage = True
+            why = "toml supergrok_regime=overage"
+        elif regime in ("pool", "included"):
+            use_overage = False
+            why = "toml supergrok_regime=pool"
+        else:
+            # auto: weekly usage % from billing log (at turn time when available)
+            thr = _cfg_float(cfg, "overage_weekly_pct_threshold", OVERAGE_WEEKLY_PCT_THRESHOLD)
+            if weekly_usage_pct is not None and weekly_usage_pct >= thr:
+                use_overage = True
+                why = f"weekly {weekly_usage_pct:g}%≥{thr:g}% overage"
+            elif weekly_usage_pct is not None:
+                use_overage = False
+                why = f"weekly {weekly_usage_pct:g}% pool"
+            else:
+                # Weekly % unknown (pre-log / no billing sample yet): do not invent
+                # pool 0 or overage 1.9 — use list$ scale + label as unknown regime.
+                return (
+                    scale_api,
+                    f"supergrok weekly % unknown → scale={scale_api:g} (list$; regime unknown)",
+                )
+        if use_overage:
+            return scale_ov, f"supergrok overage scale={scale_ov:g} ({why})"
+        return scale_pool, f"supergrok pool scale={scale_pool:g} ({why})"
+
+    return scale_api, f"default api scale={scale_api:g} (auth={auth or 'none'})"
+
+
+def resolve_topoff_discount(
+    usage_cfg: dict[str, Any] | None = None,
+    *,
+    cli_discount: float | None = None,
+) -> tuple[float, str]:
+    """Pack promo discount: 0 = full price. Opt-in 0.25 / 1.0 etc. for modeling only."""
+    if cli_discount is not None:
+        d = clamp_topoff_discount(cli_discount)
+        if d <= 0:
+            return 0.0, "full price (cli --topoff-discount 0)"
+        return d, f"cli --topoff-discount {d:g} ({topoff_discount_label(d)}; card≈face×{1 - d:g})"
+    cfg = usage_cfg or {}
+    d = clamp_topoff_discount(_cfg_float(cfg, "topoff_discount", DEFAULT_TOPOFF_DISCOUNT))
+    if d <= 0:
+        return 0.0, "full price (topoff_discount=0)"
+    return d, f"topoff_discount={d:g} ({topoff_discount_label(d)}; card≈face×{1 - d:g})"
+
+
+def resolve_topoff_discount_scenarios(
+    usage_cfg: dict[str, Any] | None = None,
+    *,
+    active_discount: float | None = None,
+) -> list[float]:
+    """Scenario list for plan-advisor card modeling (full / −25% / free by default).
+
+    Optional toml: topoff_discount_scenarios = [0.0, 0.25, 1.0]
+    Always includes active_discount when set and not already in the list.
+    """
+    cfg = usage_cfg or {}
+    raw = cfg.get("topoff_discount_scenarios")
+    out: list[float] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            try:
+                out.append(clamp_topoff_discount(float(item)))
+            except (TypeError, ValueError):
+                continue
+    if not out:
+        out = list(DEFAULT_TOPOFF_DISCOUNT_SCENARIOS)
+    # Dedupe while preserving order
+    seen: set[float] = set()
+    uniq: list[float] = []
+    for d in out:
+        key = round(d, 6)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(d)
+    if active_discount is not None:
+        ad = clamp_topoff_discount(active_discount)
+        key = round(ad, 6)
+        if key not in seen:
+            uniq.append(ad)
+    return uniq
+
+
+@dataclass
+class AuthMixSlice:
+    """list$/est$ for one auth path within a window."""
+
+    path: str  # api_key | supergrok_session | unknown
+    list_usd: float
+    est_usd: float
+    scale: float
+    scale_src: str
+    tokens: int
+    prompts: int
+    cached: int = 0
+
+    @property
+    def cache_pct(self) -> float:
+        if self.tokens <= 0:
+            return 0.0
+        return 100.0 * float(self.cached) / float(self.tokens)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "list_usd": round(self.list_usd, 4),
+            "est_usd": round(self.est_usd, 4),
+            "scale": self.scale,
+            "scale_src": self.scale_src,
+            "tokens": self.tokens,
+            "prompts": self.prompts,
+            "cached": self.cached,
+            "cache_pct": round(self.cache_pct, 2),
+        }
+
+
+@dataclass
+class AuthMixResult:
+    """Window est$ split by auth timeline (from unified.jsonl change-points)."""
+
+    slices: list[AuthMixSlice]
+    list_total: float
+    est_total: float
+    source: str  # "auth_mix" | "uniform"
+    uniform_scale: float | None = None
+    uniform_src: str | None = None
+    # Optional one-pass bucket totals when group_key_fn was provided
+    est_by_key: dict[str, float] = field(default_factory=dict)
+    list_by_key: dict[str, float] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "list_total": round(self.list_total, 4),
+            "est_total": round(self.est_total, 4),
+            "uniform_scale": self.uniform_scale,
+            "uniform_src": self.uniform_src,
+            "slices": [s.as_dict() for s in self.slices],
+            "est_by_key": {k: round(v, 4) for k, v in self.est_by_key.items()},
+            "list_by_key": {k: round(v, 4) for k, v in self.list_by_key.items()},
+        }
+
+
+def estimate_with_auth_mix(
+    records: list[Any],
+    rates: TokenRates,
+    *,
+    change_points: list[Any],
+    usage_cfg: dict[str, Any] | None = None,
+    weekly_usage_pct: float | None = None,
+    weekly_timeline: list[Any] | None = None,
+    fallback_auth: str = "unknown",
+    force_uniform_scale: float | None = None,
+    force_uniform_src: str | None = None,
+    group_key_fn: Any | None = None,
+) -> AuthMixResult:
+    """Apply path-specific scales using auth change-points (or one forced scale).
+
+    When force_uniform_scale is set (--cash-scale / prepaid fit), all turns use it.
+    Otherwise each turn is labeled from the log timeline and scaled by path/regime.
+
+    SuperGrok pool vs overage uses **weekly % at turn time** from billing log when
+    available — not "current week only" (which zeroed historical top-off burn).
+    When weekly % is missing for a SuperGrok turn, scale is list$ (regime unknown).
+
+    Optional group_key_fn(record) → str accumulates est$/list$ per key in one pass
+    (avoids re-running mix per report bucket).
+    """
+    from .auth_status import (  # local import avoids cycle issues
+        auth_effective_at,
+        weekly_usage_at,
+    )
+
+    cfg = usage_cfg or {}
+    list_total = 0.0
+    # accumulate by path; track scale range for display
+    acc: dict[str, dict[str, float | int | str]] = {}
+    est_by_key: dict[str, float] = {}
+    list_by_key: dict[str, float] = {}
+
+    for r in records:
+        list_b = float(
+            api_estimate_usd(
+                cached=int(getattr(r, "cached", 0) or 0),
+                uncached_in=max(
+                    0, int(getattr(r, "input", 0) or 0) - int(getattr(r, "cached", 0) or 0)
+                ),
+                output=int(getattr(r, "output", 0) or 0),
+                reasoning=int(getattr(r, "reasoning", 0) or 0),
+                rates=rates,
+            )
+        )
+        list_total += list_b
+        ts = getattr(r, "ts", None)
+        if force_uniform_scale is not None:
+            path = "uniform"
+            scale = float(force_uniform_scale)
+            scale_src = force_uniform_src or f"uniform {scale:g}"
+        else:
+            if ts is not None and change_points:
+                path = auth_effective_at(ts, change_points, fallback=fallback_auth)
+            else:
+                path = fallback_auth
+            # Per-turn weekly % when timeline exists; else None → regime unknown @ list$
+            w_pct = weekly_usage_pct
+            if ts is not None and weekly_timeline:
+                w_at = weekly_usage_at(ts, weekly_timeline)
+                w_pct = w_at  # may be None if before first billing sample
+            auth_for_scale = path if path != "unknown" else fallback_auth
+            if path == "unknown":
+                scale, scale_src = resolve_cash_scale(
+                    usage_cfg=cfg,
+                    auth_effective="api_key",
+                    weekly_usage_pct=w_pct,
+                )
+                scale_src = f"unknown→{scale_src}"
+            else:
+                scale, scale_src = resolve_cash_scale(
+                    usage_cfg=cfg,
+                    auth_effective=auth_for_scale,
+                    weekly_usage_pct=w_pct,
+                )
+            # Split SuperGrok by regime so pool/overage/unknown don't collapse
+            if path == "supergrok_session":
+                if "unknown" in scale_src or w_pct is None:
+                    path = "supergrok_unknown"
+                elif scale <= 0.05:
+                    path = "supergrok_pool"
+                elif scale >= 1.5:
+                    path = "supergrok_overage"
+                # else mid-scale custom → keep supergrok_session
+
+        est_b = list_b * scale
+        if group_key_fn is not None:
+            try:
+                gkey = str(group_key_fn(r))
+            except (TypeError, ValueError, AttributeError, KeyError):
+                gkey = "?"
+            est_by_key[gkey] = est_by_key.get(gkey, 0.0) + est_b
+            list_by_key[gkey] = list_by_key.get(gkey, 0.0) + list_b
+
+        bucket = acc.setdefault(
+            path,
+            {
+                "list_usd": 0.0,
+                "est_usd": 0.0,
+                "scale": scale,
+                "scale_src": scale_src,
+                "scale_min": scale,
+                "scale_max": scale,
+                "tokens": 0,
+                "prompts": 0,
+                "cached": 0,
+            },
+        )
+        bucket["list_usd"] = float(bucket["list_usd"]) + list_b
+        bucket["est_usd"] = float(bucket["est_usd"]) + est_b
+        bucket["tokens"] = int(bucket["tokens"]) + int(getattr(r, "total", 0) or 0)
+        bucket["cached"] = int(bucket["cached"]) + int(getattr(r, "cached", 0) or 0)
+        bucket["prompts"] = int(bucket["prompts"]) + 1
+        bucket["scale"] = scale
+        bucket["scale_src"] = scale_src
+        bucket["scale_min"] = min(float(bucket["scale_min"]), scale)
+        bucket["scale_max"] = max(float(bucket["scale_max"]), scale)
+
+    slices = []
+    for p, v in sorted(acc.items(), key=lambda kv: -float(kv[1]["list_usd"])):
+        smin, smax = float(v["scale_min"]), float(v["scale_max"])
+        # Effective average scale for the slice (est/list)
+        list_u = float(v["list_usd"])
+        est_u = float(v["est_usd"])
+        avg = (est_u / list_u) if list_u > 0 else float(v["scale"])
+        src = str(v["scale_src"])
+        if abs(smax - smin) > 0.05:
+            src = f"mixed scales {smin:g}–{smax:g} (avg {avg:.2f})"
+        slices.append(
+            AuthMixSlice(
+                path=p,
+                list_usd=list_u,
+                est_usd=est_u,
+                scale=avg,
+                scale_src=src,
+                tokens=int(v["tokens"]),
+                prompts=int(v["prompts"]),
+                cached=int(v.get("cached") or 0),
+            )
+        )
+    est_total = sum(s.est_usd for s in slices)
+    if force_uniform_scale is not None:
+        return AuthMixResult(
+            slices=slices,
+            list_total=list_total,
+            est_total=est_total,
+            source="uniform",
+            uniform_scale=float(force_uniform_scale),
+            uniform_src=force_uniform_src,
+            est_by_key=est_by_key,
+            list_by_key=list_by_key,
+        )
+    return AuthMixResult(
+        slices=slices,
+        list_total=list_total,
+        est_total=est_total,
+        source="auth_mix" if change_points else "fallback_auth",
+        uniform_scale=None,
+        uniform_src=None,
+        est_by_key=est_by_key,
+        list_by_key=list_by_key,
+    )
 
 
 def load_usage_config(grok_home: Path | str) -> dict[str, Any]:
@@ -459,120 +854,3 @@ def load_plan_advisor_config(usage_cfg: dict | None) -> dict[str, float]:
         except (TypeError, ValueError):
             out[key] = float(default)
     return out
-
-
-# Plain multi-line footer (print with markup=False — [brackets] are not Rich tags).
-COST_CAVEATS_SHORT = """\
-list$ = estimated $ at public API prices × your local tokens.
-est$  = spend-style estimate (list$ × cash_scale; closer to prepaid burn).
-Build Session Cost / Credits / Weekly limit are different meters — they will not match list$/est$.
-FAQ: grok-utils usage info   ·   Tune: --cash-scale or config cash_scale"""
-
-COST_CAVEATS_LONG = """
-FAQ — Why numbers do not match Grok Build /usage
-------------------------------------------------
-Grok Build and grok-utils show different *kinds* of money and tokens. None is
-"wrong"; they answer different questions.
-
-  Q: What is list$ in the table?
-  A: "If these tokens were billed at public API list prices for the model
-     (--rates-model, default grok-4.5), what would that be?" Offline estimate
-     from files under ~/.grok/sessions. Includes cache at the cached rate.
-
-  Q: What is est$?
-  A: Spend-oriented estimate: list$ × cash_scale. Default scale ~0.57 was
-     measured against prepaid wallet burn (not against Session Cost). Closer
-     to "how fast credits leave the wallet" than pure list$.
-
-  Q: Why does Build Session Cost ($28) differ from list$ (~$18) on the same work?
-  A: Session Cost is Build's own meter for *this session* (since start or last
-     resume). list$ is public API rates × tokens. They use different accounting;
-     Session Cost is often higher or lower than list$ and is NOT used to set
-     cash_scale. Tokens can also differ slightly (UI snapshot vs full local log).
-
-  Q: What are Credits, Weekly limit 100%, Auto topup $20?
-  A: Account-wide wallet, not per-app:
-       Credits     = prepaid balance still available
-       Weekly limit= included pool for the period (100% = exhausted)
-       Auto topup  = when the pool/credits need more, charge e.g. $20 at list-
-                     style rates and add to Credits
-     A top-up is not "this app cost $20"; it refills the shared wallet.
-
-  Q: Which number should I trust for budgeting?
-  A: - Per-app / per-day offline shares → grok-utils list$ / est$
-     - "How expensive was this chat session?" → Build Session Cost
-     - "How much money is left / did I top up?" → Credits + Auto topup
-     - "Which plan if I keep this pace?" → usage cost --plan-advisor (-P)
-
-  Q: Common commands (novice)
-  A:  # This month-ish through latest local data
-      grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
-
-      # Same + plan comparison (API vs SuperGrok vs Heavy)
-      grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5 -P
-
-      # Pin day-to-day scale in ~/.grok/grok-utils.toml
-      [usage]
-      cash_scale = 0.57
-
-CAVEATS & COST LEDGERS (technical)
-----------------------------------
-Local meters (updates.jsonl turn_completed.usage):
-  inputTokens, outputTokens, cachedReadTokens, reasoningTokens, costUsdTicks, modelCalls.
-  Deduped by prompt_id (max totalTokens kept).
-
-list$ formula (always includes cache):
-  cached/1e6 × cached_rate + uncached_in/1e6 × input_rate
-  + (output+reasoning)/1e6 × output_rate
-
-est$ = list$ × cash_scale
-  Default cash_scale ≈ 0.57 (API prepaid burn / list$ on measured windows).
-
-  Day-to-day default (no CLI flags):
-    # ~/.grok/grok-utils.toml  (or config.toml)
-    [usage]
-    cash_scale = 0.57
-
-  Override for one run:
-    --cash-scale N
-    --prepaid-usd + --credits-remaining  (scale = wallet burn / list$ for the window)
-
-Effective rates (list × scale) assume a *uniform* discount vs list.
-  Prepaid may not discount cached/input/output equally — only wallet total is known offline.
-
---plan-advisor / -P
-  Compare pure API vs SuperGrok vs SuperGrok Heavy for the same window
-  (run-rate → monthly projection). "Best fit" assumes this window's intensity
-  continues. If usage drops or varies a lot, pure API (est$) is often better —
-  no flat subscription. Both SuperGrok tiers use a weekly usage pool + list-rate
-  top-offs after 100%. Exact pool $ is not published — defaults are estimates.
-  Heavy is priced for sustained high use; top-offs are a safety net.
-
-  [usage]
-  supergrok_usd = 30
-  heavy_usd = 300
-  supergrok_weekly_include_usd = 35
-  heavy_weekly_include_usd = 150
-  project_days = 30
-
-MAINTAINING DEFAULTS (Phase 1 — no network in usage cost)
-  When xAI announces API rate or SuperGrok/Heavy price changes:
-    1. Update rate tables / plan constants in utils/pricing.py
-    2. Bump PRICES_LAST_VERIFIED (ISO date)
-    3. Or set overrides in ~/.grok/grok-utils.toml without a release
-  Do not auto-scrape x.ai or call APIs from day-to-day cost reports (v1).
-
-  Future (optional, opt-in): refresh list rates from Models API with a key:
-    GET https://api.x.ai/v1/models  or  .../models/{model_id}
-    Fields: prompt_text_token_price, cached_prompt_text_token_price,
-            completion_text_token_price (+ long-context variants)
-    Units: USD cents per 100M tokens → divide by 100 for $ per 1M.
-  That updates list$ tables only — not subscription fees or weekly pool sizes
-  (those still come from x.ai pricing announcements / human check).
-
---rates-model (default: grok-4.5) applies to list$ only.
-  Standard context ≤200k; long-context 2× not applied yet.
-
-Session UI Cost is lifetime of a session (may span SuperGrok + API eras).
-Weekly limit / credits / auto-topup are account-global, not per-app.
-""".strip()

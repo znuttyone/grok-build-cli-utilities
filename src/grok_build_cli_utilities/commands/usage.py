@@ -11,9 +11,7 @@ from rich.progress import Progress
 from rich.table import Table
 
 from ..utils.common import (
-    SessionSummary,
     console,
-    estimate_cost,
     format_age,
     get_grok_home,
     get_sessions_dir,
@@ -22,32 +20,33 @@ from ..utils.common import (
     warn,
 )
 from ..utils.pricing import (
-    COST_CAVEATS_LONG,
-    COST_CAVEATS_SHORT,
     DEFAULT_CASH_SCALE,
     DEFAULT_RATES_MODEL,
-    PlanAdvisorResult,
-    TokenRates,
-    apply_cash_scale,
     effective_rates,
     list_rate_profiles,
     load_plan_advisor_config,
-    load_usage_config,
     plan_advisor,
-    resolve_cash_scale,
-    resolve_rates_model,
+    resolve_topoff_discount_scenarios,
 )
+from ..utils.usage_cost_window import api_scale_for_advisor, build_token_cost_window
+from ..utils.usage_display import (
+    cfg_overage_scale,
+    fmt_tokens,
+    format_auth_plan_advisor_line,
+    print_api_breakdown,
+    print_plan_advisor,
+    print_token_cost_summary,
+)
+from ..utils.usage_faq import COST_CAVEATS_LONG
 from ..utils.usage_tokens import (
-    UsageBucket,
     UsageRec,
-    aggregate,
     allocate_invoice,
     filter_usage,
     list_price_usd,
     load_turn_usage,
     parse_iso_date,
-    total_bucket,
 )
+from .usage_legacy import print_cost_rough, print_legacy_session_report
 
 app = typer.Typer(help="Usage reports, leaderboards and trends", no_args_is_help=True)
 
@@ -71,11 +70,7 @@ def _ascii_bar(value: float, maxv: float, width: int = 24) -> str:
 
 
 def _fmt_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(n)
+    return fmt_tokens(n)
 
 
 def _data_date_span(records: list[UsageRec]) -> tuple[date | None, date | None]:
@@ -175,12 +170,24 @@ def report(
     date_to: str | None = typer.Option(
         None, "--to", help="Inclusive end YYYY-MM-DD (omit for through latest session data)"
     ),
-    by: str = typer.Option("project", "--by", help="Group by: project | app | model | day"),
+    by: str = typer.Option(
+        "app",
+        "--by",
+        help=(
+            "Group by: app (short name, default, list$/est$) | project (full cwd, "
+            "list$/est$ with --tokens) | model | day. "
+            "--tokens required for project/model/day; ignored with --by app"
+        ),
+    ),
     top: int = typer.Option(10, "--top", help="Show top N"),
     tokens: bool = typer.Option(
         False,
         "--tokens",
-        help="Use turn-level tokens + list$/est$ (recommended for cost awareness)",
+        help=(
+            "Use turn-level tokens + list$/est$ (same as usage cost). "
+            "Redundant with --by app (already on). Needed for --by project|model|day "
+            "to leave the legacy session-summary path"
+        ),
     ),
     rates_model: str = typer.Option(
         DEFAULT_RATES_MODEL,
@@ -196,66 +203,64 @@ def report(
         "--cash-scale",
         metavar="SCALE",
         help=(
-            f"Requires number: scale list$ → est$ (e.g. --cash-scale 0.57). "
-            f"Default {DEFAULT_CASH_SCALE}; or usage.cash_scale in ~/.grok/grok-utils.toml"
+            "Requires number: force uniform list$ → est$ scale (else path/regime "
+            "auth mix like usage cost). Optional: usage.cash_scale in toml"
         ),
     ),
     json_out: bool = typer.Option(False, "--json", help="Flag (no value): machine-readable JSON"),
 ) -> None:
     """Generate a rich usage report.
 
-    Token path (--tokens or --by app): list$ + est$ (same cash_scale as usage cost).
-    Value options need an argument (e.g. --cash-scale 0.57, --from 2026-08-01).
+    Token path (list$ + est$, same path/regime + auth mix as usage cost):
+      · always when --by app
+      · also when --tokens (for --by project | model | day)
+    Without --tokens, --by project|model|day uses the legacy session-summary path
+    (message counts, not list$/est$). Share bars use list$ on the token path.
     """
     grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
-    rates_label, rates = resolve_rates_model(rates_model)
 
-    if tokens or by in ("app",):
-        # Token path when requested or when grouping by short app name
-        use_tokens = tokens or by == "app"
-    else:
-        use_tokens = tokens
+    # --by app implies token path; --tokens is only meaningful for other --by values
+    if tokens and by == "app":
+        warn(
+            "--tokens is ignored with --by app (token path / list$/est$ is already on). "
+            "Use --tokens when grouping by project, model, or day, e.g.\n"
+            "  grok-utils usage report --by day --tokens --from 2026-08-01 -m grok-4.5"
+        )
+    use_tokens = bool(tokens) or by == "app"
 
     if use_tokens:
         group = by if by in ("app", "project", "model", "day") else "app"
-        records, d_from, d_to, _data_earliest, _data_latest = _load_filtered_usage(
+        records, d_from, d_to, data_earliest, data_latest = _load_filtered_usage(
             grok_home, since=since, date_from=date_from, date_to=date_to, apps=None
         )
         if not records:
             warn("No turn usage data for report (try without --tokens for summary-based report).")
             return
-        buckets = aggregate(records, group)
-        tot = total_bucket(records)
-        list_total = tot.api_est(rates)
         result_earliest, result_latest = _data_date_span(records)
-
-        usage_cfg = load_usage_config(grok_home)
-        cfg_scale = usage_cfg.get("cash_scale")
-        if cfg_scale is not None:
-            try:
-                cfg_scale = float(cfg_scale)
-            except (TypeError, ValueError):
-                cfg_scale = None
-        cash_scale_val, cash_scale_src = resolve_cash_scale(
-            cli_scale=cash_scale,
-            list_total_usd=list_total,
-            config_scale=cfg_scale,
+        win = build_token_cost_window(
+            grok_home,
+            records,
+            group=group,
+            rates_model=rates_model,
+            cash_scale=cash_scale,
+            d_from=d_from,
+            d_to=d_to,
+            data_earliest=data_earliest,
+            data_latest=data_latest,
+            result_earliest=result_earliest,
+            result_latest=result_latest,
         )
-        est_total = apply_cash_scale(list_total, cash_scale_val)
-
-        # Sort by spend-oriented est$ (same as usage cost)
-        buckets.sort(key=lambda b: -apply_cash_scale(b.api_est(rates), cash_scale_val))
 
         if json_out:
             import json
 
             top_rows = []
-            for b in buckets[:top]:
-                list_b = b.api_est(rates)
-                row = b.to_dict(rates)
+            for b in win.buckets[:top]:
+                list_b = b.api_est(win.rates)
+                row = b.to_dict(win.rates)
                 row["list_usd"] = round(list_b, 4)
-                row["api_est_usd"] = round(list_b, 4)  # alias
-                row["est_usd"] = round(apply_cash_scale(list_b, cash_scale_val), 4)
+                row["api_est_usd"] = round(list_b, 4)
+                row["est_usd"] = round(win.est_for_key(b.key), 4)
                 top_rows.append(row)
 
             print(
@@ -271,20 +276,29 @@ def report(
                         "result_to": (
                             result_latest.isoformat() if result_latest else None
                         ),
-                        "rates_model": rates_label,
-                        "rates": rates.as_dict(),
-                        "cash_scale": cash_scale_val,
-                        "cash_scale_source": cash_scale_src,
+                        "rates_model": win.rates_label,
+                        "rates": win.rates.as_dict(),
+                        "cash_scale": win.cash_scale_val,
+                        "cash_scale_source": win.cash_scale_src,
+                        "topoff_discount": win.topoff_d,
+                        "topoff_discount_source": win.topoff_src,
+                        "auth": win.auth_st.as_dict(),
+                        "weekly_usage_pct": win.weekly_pct,
+                        "prepaid_balance_usd": win.prepaid_balance,
+                        "auth_mix": win.mix.as_dict(),
                         "totals": {
-                            **tot.to_dict(rates),
-                            "list_usd": round(list_total, 4),
-                            "api_est_usd": round(list_total, 4),
-                            "est_usd": round(est_total, 4),
+                            **win.tot.to_dict(win.rates),
+                            "list_usd": round(win.list_total, 4),
+                            "api_est_usd": round(win.list_total, 4),
+                            "est_usd": round(win.est_total, 4),
+                            "est_cash_usd": round(win.est_cash_total, 4),
                         },
                         "buckets": top_rows,
                         "caveats": [
                             "list$_is_pure_api_list_rates",
-                            "est$_is_list_times_cash_scale_spend_oriented",
+                            "est$_uses_auth_timeline_mix_unless_uniform_override",
+                            "share_bars_use_list$",
+                            "est_cash$_applies_topoff_discount_to_est$",
                         ],
                     },
                     indent=2,
@@ -292,7 +306,6 @@ def report(
             )
             return
 
-        # Title period = actual dates in the filtered session data
         period = ""
         if result_earliest or result_latest:
             left = result_earliest.isoformat() if result_earliest else "…"
@@ -301,22 +314,18 @@ def report(
             if d_from is not None and result_earliest is not None and d_from < result_earliest:
                 period += f"  (requested --from {d_from.isoformat()})"
         title = (
-            f"Usage by {group} (token-based, top {top}, {tot.n} prompts, "
-            f"{_fmt_tokens(tot.total)} tok, list$ ${list_total:.2f}, "
-            f"est$ ${est_total:.2f}){period}"
+            f"Usage by {group} (list$ primary · est$=path scale, top {top}, "
+            f"{win.tot.n} prompts, {_fmt_tokens(win.tot.total)} tok){period}"
         )
         t = make_table(
             title,
-            ["Key", "Prm", "Tokens", "Cache%", "list$", "est$", "Share(est$)", "Share(tok)"],
+            ["Key", "Prm", "Tokens", "Cache%", "list$", "est$", "Share(list$)", "Share(tok)"],
         )
-        max_est = max(
-            (apply_cash_scale(b.api_est(rates), cash_scale_val) for b in buckets[:top]),
-            default=1.0,
-        ) or 1.0
-        max_tok = max((b.total for b in buckets[:top]), default=1) or 1
-        for b in buckets[:top]:
-            list_b = b.api_est(rates)
-            est_b = apply_cash_scale(list_b, cash_scale_val)
+        max_list = max((b.api_est(win.rates) for b in win.buckets[:top]), default=1.0) or 1.0
+        max_tok = max((b.total for b in win.buckets[:top]), default=1) or 1
+        for b in win.buckets[:top]:
+            list_b = b.api_est(win.rates)
+            est_b = win.est_for_key(b.key)
             key = b.key[:44] + ("…" if len(b.key) > 44 else "")
             t.add_row(
                 key,
@@ -325,121 +334,36 @@ def report(
                 f"{b.cache_pct:.1f}%",
                 f"{list_b:.2f}",
                 f"{est_b:.2f}",
-                _ascii_bar(est_b, max_est, 12),
+                _ascii_bar(list_b, max_list, 12),
                 _ascii_bar(float(b.total), float(max_tok), 12),
             )
         console.print(t)
-        console.print(f"\n[bold]Rates model (list$):[/bold] {rates.short_label()}")
-        console.print(
-            f"[bold]Cash scale (est$):[/bold] {cash_scale_val:.4g}  "
-            f"[dim]({cash_scale_src})[/dim]"
-        )
-        console.print(
-            f"[bold]TOTALS[/bold]  prompts={tot.n:,}  tokens={tot.total:,}  "
-            f"cache={tot.cache_pct:.1f}%  "
-            f"list$=${list_total:.2f}  "
-            f"[bold green]est$=${est_total:.2f}[/bold green]"
-        )
-        # spark of daily tokens
-        day_buckets = aggregate(records, "day")
+        print_token_cost_summary(win, cost_mode=False, show_faq_hint=False)
+        from ..utils.usage_tokens import aggregate as _agg
+        day_buckets = _agg(records, "day")
         vals = [b.total for b in day_buckets[-14:]]
         if vals:
             console.print(
-                f"[bold]Daily tokens spark (last {len(vals)} days):[/bold] "
-                f"{_sparkline(vals)}  (max {_fmt_tokens(max(vals))})"
+                f"[dim]Daily tokens[/dim]  {_sparkline(vals)}  "
+                f"(last {len(vals)}d · max {_fmt_tokens(max(vals))})"
             )
-        console.print()
-        console.print(COST_CAVEATS_SHORT, style="dim", markup=False)
-        return
-
-    # Legacy summary.json path
-    sessions = list(iter_sessions(grok_home))
-
-    if since or date_from:
-        raw = date_from or since
-        try:
-            cutoff = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)  # type: ignore[arg-type]
-            sessions = [
-                s
-                for s in sessions
-                if (s.created_at or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
-            ]
-        except (ValueError, TypeError, OverflowError):
-            warn(f"Ignoring bad date filter {raw}")
-
-    if not sessions:
-        warn("No data for report.")
-        return
-
-    group_by = by if by in ("project", "model", "day") else "project"
-    groups: defaultdict[str, list[SessionSummary]] = defaultdict(list)
-    for s in sessions:
-        key = {
-            "project": s.cwd,
-            "model": s.current_model_id,
-            "day": (s.created_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d"),
-        }[group_by]
-        groups[key].append(s)
-
-    rows = []
-    for k, ss in groups.items():
-        msgs = sum(x.num_messages for x in ss)
-        actives: list[datetime] = []
-        for x in ss:
-            dt = x.last_active_at or x.created_at
-            if dt:
-                actives.append(dt)
-        last = max(actives) if actives else None
-        rows.append((k, len(ss), msgs, last))
-
-    rows.sort(key=lambda r: (-r[1], -r[2]))
-
-    if json_out:
-        import json
-
-        print(
-            json.dumps(
-                [
-                    {
-                        "key": r[0],
-                        "sessions": r[1],
-                        "messages": r[2],
-                        "last": r[3].isoformat() if r[3] else None,
-                    }
-                    for r in rows[:top]
-                ],
-                indent=2,
-            )
+        console.print(
+            "\n[dim]FAQ: grok-utils usage info"
+            "  ·  cost detail: grok-utils usage cost … -P"
+            "  ·  wallet: grok-utils auth status[/dim]"
         )
         return
 
-    title = f"Usage by {group_by} (top {top}, {len(sessions)} total sessions)"
-    t = make_table(title, ["Key", "Sessions", "Messages", "Last Active", "Share"])
-    max_sess = max(r[1] for r in rows) or 1
-    for k, nsess, nmsg, last in rows[:top]:
-        share = _ascii_bar(nsess, max_sess, 18)
-        t.add_row(
-            k[:48] + ("…" if len(k) > 48 else ""),
-            str(nsess),
-            str(nmsg),
-            format_age(last),
-            share,
-        )
-    console.print(t)
-    console.print(
-        "\n[dim]Tip: grok-utils usage report --tokens --by app  for token-accurate + api$ bars[/dim]"
+    # Legacy summary.json path (sessions/messages only)
+    print_legacy_session_report(
+        grok_home,
+        since=since,
+        date_from=date_from,
+        by=by,
+        top=top,
+        json_out=json_out,
     )
 
-    days: defaultdict[str, int] = defaultdict(int)
-    for s in sessions:
-        d = (s.created_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
-        days[d] += 1
-    recent = sorted(days.items())[-14:]
-    vals = [v for _, v in recent]
-    if vals:
-        console.print(
-            f"\n[bold]Recent activity spark (last {len(vals)} days):[/bold] {_sparkline(vals)}  (max {max(vals)})"
-        )
 
 
 @app.command("top-projects")
@@ -603,6 +527,16 @@ def cost_report(
             "Use together with --prepaid-usd → burn/list scale"
         ),
     ),
+    topoff_discount: float | None = typer.Option(
+        None,
+        "--topoff-discount",
+        metavar="FRAC",
+        help=(
+            "Requires 0..1: model Extra Credits pack promo "
+            "(0=full price, 0.25=−25%, 1.0=free tops). "
+            "Default 0; or usage.topoff_discount in toml. Affects est_cash$ + plan scenarios."
+        ),
+    ),
     list_price: bool = typer.Option(
         False,
         "--list-price",
@@ -623,6 +557,15 @@ def cost_report(
             "Weekly pool sizes are estimates."
         ),
     ),
+    detail: bool = typer.Option(
+        False,
+        "--detail",
+        "-v",
+        help=(
+            "Flag (no value): verbose footer — full auth-mix lines, promo/overage "
+            "scenarios, Heavy break-even, long caveats"
+        ),
+    ),
     app: list[str] | None = typer.Option(  # noqa: B008
         None,
         "--app",
@@ -633,13 +576,15 @@ def cost_report(
         False, "--json", help="Flag (no value): machine-readable JSON"
     ),
 ) -> None:
-    """Token-accurate cost: list$ (list rates) + est$ (spend-oriented, scaled).
+    """Token-accurate cost: list$ (API list rates) + est$ (path/regime spend lens).
 
     Options that take a value need the number/date on the same flag
     (e.g. --invoice-usd 180, not bare --invoice-usd). Use: grok-utils usage cost --help
 
-    est$ = list$ × cash_scale (~prepaid burn). Day-to-day scale from
-    ~/.grok/grok-utils.toml  (section usage, key cash_scale), else built-in default.
+    list$ = tokens × published rates (--rates-model). Primary activity meter.
+    est$  = list$ × path/regime scale (API≈1.0; SuperGrok pool≈0; overage≈1.9)
+            via auth timeline mix unless --cash-scale / prepaid-fit forces one scale.
+    Footer: Wallet / auth snapshot (Extra Credits · weekly % · path). FAQ: usage info
 
       # Closed window
       grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.5
@@ -651,26 +596,28 @@ def cost_report(
       grok-utils usage cost --from 2026-07-18 --by app -m grok-4.5 --plan-advisor
 
       # One-shot wallet fit for a window (both amounts required)
-      grok-utils usage cost ... --prepaid-usd 60 --credits-remaining 12.12
+      grok-utils usage cost ... --prepaid-usd 70 --credits-remaining 21.40
+
+      # Model promo card cost (−25% or free tops) for est_cash$ / plan-advisor
+      grok-utils usage cost ... -P --topoff-discount 0.25
+      grok-utils usage cost ... -P --topoff-discount 1.0
 
       # Invoice allocation (amount required)
       grok-utils usage cost ... --invoice-usd 180 --fixed-usd 30
 
     See: grok-utils usage info
     """
-    grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
-    rates_label, rates = resolve_rates_model(rates_model)
-    usage_cfg = load_usage_config(grok_home)
-    cfg_scale = usage_cfg.get("cash_scale")
-    if cfg_scale is not None:
-        try:
-            cfg_scale = float(cfg_scale)
-        except (TypeError, ValueError):
-            cfg_scale = None
 
+    grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
 
     if mode == "rough":
-        _cost_rough(ctx, since=since or date_from, by=by if by in ("model", "project") else "model", top=top, json_out=json_out)
+        print_cost_rough(
+            ctx,
+            since=since or date_from,
+            by=by if by in ("model", "project") else "model",
+            top=top,
+            json_out=json_out,
+        )
         return
 
     if by not in ("app", "project", "model", "day", "week", "month", "none"):
@@ -686,21 +633,46 @@ def cost_report(
         warn("Tip: try --mode rough for legacy summary-based estimate, or check --from/--to.")
         return
 
-    buckets = aggregate(records, by)
-    tot = total_bucket(records)
-    list_total = tot.api_est(rates)
     result_earliest, result_latest = _data_date_span(records)
-
-    cash_scale_val, cash_scale_src = resolve_cash_scale(
-        cli_scale=cash_scale,
+    win = build_token_cost_window(
+        grok_home,
+        records,
+        group=by,
+        rates_model=rates_model,
+        cash_scale=cash_scale,
         prepaid_usd=prepaid_usd,
         credits_remaining=credits_remaining,
-        list_total_usd=list_total,
-        config_scale=cfg_scale,
+        topoff_discount=topoff_discount,
+        d_from=d_from,
+        d_to=d_to,
+        data_earliest=data_earliest,
+        data_latest=data_latest,
+        result_earliest=result_earliest,
+        result_latest=result_latest,
     )
-    est_total = apply_cash_scale(list_total, cash_scale_val)
+    rates = win.rates
+    rates_label = win.rates_label
+    list_total = win.list_total
+    est_total = win.est_total
+    est_cash_total = win.est_cash_total
+    tot = win.tot
+    buckets = win.buckets
+    mix = win.mix
+    cash_scale_val = win.cash_scale_val
+    cash_scale_src = win.cash_scale_src
+    force_uniform = win.force_uniform
+    topoff_d = win.topoff_d
+    topoff_src = win.topoff_src
+    auth_st = win.auth_st
+    weekly_pct = win.weekly_pct
+    prepaid_balance = win.prepaid_balance
+    usage_cfg = win.usage_cfg
+    topoff_scenarios = resolve_topoff_discount_scenarios(
+        usage_cfg, active_discount=topoff_d if topoff_d > 0 else None
+    )
 
-    advisor: PlanAdvisorResult | None = None
+    scale_api, advisor_est = api_scale_for_advisor(win)
+    advisor = None
     if plan_advisor_flag:
         if result_earliest is None or result_latest is None:
             warn("Plan advisor needs dated turns; skipping.")
@@ -709,10 +681,10 @@ def cost_report(
             pa_cfg = load_plan_advisor_config(usage_cfg)
             advisor = plan_advisor(
                 list_usd=list_total,
-                est_usd=est_total,
+                est_usd=advisor_est,
                 tokens=tot.total,
                 cache_pct=tot.cache_pct,
-                cash_scale=cash_scale_val,
+                cash_scale=scale_api,
                 window_days=window_days,
                 project_days=int(pa_cfg["project_days"]),
                 supergrok_usd=pa_cfg["supergrok_usd"],
@@ -738,9 +710,6 @@ def cost_report(
                 date_to=d_to,
             )
 
-    # Sort by spend-oriented est$ (list$ × scale)
-    buckets.sort(key=lambda b: -apply_cash_scale(b.api_est(rates), cash_scale_val))
-
     if json_out:
         import json
 
@@ -749,7 +718,7 @@ def cost_report(
             list_b = b.api_est(rates)
             row = b.to_dict(rates)
             row["list_usd"] = round(list_b, 4)
-            row["est_usd"] = round(apply_cash_scale(list_b, cash_scale_val), 4)
+            row["est_usd"] = round(win.est_for_key(b.key), 4)
             if show_invoice:
                 var = b.ticks * inv_scale
                 row["variable_usd"] = round(var, 4)
@@ -771,12 +740,24 @@ def cost_report(
             "rates": rates.as_dict(),
             "cash_scale": cash_scale_val,
             "cash_scale_source": cash_scale_src,
-            "effective_rates": effective_rates(rates, cash_scale_val).as_dict(),
+            "topoff_discount": topoff_d,
+            "topoff_discount_source": topoff_src,
+            "effective_rates": (
+                effective_rates(rates, cash_scale_val).as_dict()
+                if force_uniform is not None and cash_scale_val > 0
+                else None
+            ),
+            "auth": auth_st.as_dict(),
+            "weekly_usage_pct": weekly_pct,
+            "prepaid_balance_usd": prepaid_balance,
+            "topoff_discount_scenarios": topoff_scenarios,
+            "auth_mix": mix.as_dict(),
             "totals": {
                 **tot.to_dict(rates),
                 "list_usd": round(list_total, 4),
-                "api_est_usd": round(list_total, 4),  # alias
+                "api_est_usd": round(list_total, 4),
                 "est_usd": round(est_total, 4),
+                "est_cash_usd": round(est_cash_total, 4),
                 "list_price_usd": round(list_price_usd(tot.ticks), 4) if list_price else None,
             },
             "invoice": (
@@ -793,16 +774,16 @@ def cost_report(
             "plan_advisor": advisor.as_dict() if advisor else None,
             "caveats": [
                 "list$_is_pure_api_list_rates",
-                "est$_is_list_times_cash_scale_spend_oriented",
-                "effective_rates_are_list_times_uniform_scale",
+                "est$_uses_auth_timeline_mix_unless_uniform_override",
+                "weekly_pct_unknown_uses_list_scale_not_pool_or_overage",
+                "plan_advisor_pure_api_uses_api_scale_not_table_scale",
+                "topoff_discount_is_card_promo_not_list$",
                 "long_context_tier_not_applied",
             ],
         }
         print(json.dumps(payload, indent=2))
         return
 
-    # Human table — primary path: list$ + est$
-    # Title uses actual result span; note requested --from when it was before data.
     period = ""
     if result_earliest or result_latest or d_from or d_to:
         left = (
@@ -823,17 +804,17 @@ def cost_report(
         headers += ["var$", "tot$"]
     if list_price:
         headers.append("ticks$")
-    headers.append("Share")
+    headers.append("Share(list$)")
 
     t = make_table(
-        f"Estimated Cost by {by} (est$=list$×scale){period}",
+        f"Estimated Cost by {by} (list$ primary · est$=path scale){period}",
         headers,
     )
-    share_vals = [apply_cash_scale(b.api_est(rates), cash_scale_val) for b in buckets[:top]]
+    share_vals = [b.api_est(rates) for b in buckets[:top]]
     max_share = max(share_vals, default=1.0) or 1.0
     for b in buckets[:top]:
         list_b = b.api_est(rates)
-        est_b = apply_cash_scale(list_b, cash_scale_val)
+        est_b = win.est_for_key(b.key)
         key = b.key[:40] + ("…" if len(b.key) > 40 else "")
         cells: list[str] = [
             key,
@@ -848,28 +829,11 @@ def cost_report(
             cells.extend([f"{var:.2f}", f"{var + fixed_per:.2f}"])
         if list_price:
             cells.append(f"{list_price_usd(b.ticks):.2f}")
-        cells.append(_ascii_bar(est_b, max_share, 12))
+        cells.append(_ascii_bar(list_b, max_share, 12))
         t.add_row(*cells)
     console.print(t)
 
-    eff = effective_rates(rates, cash_scale_val)
-    console.print(f"\n[bold]Rates model (list$):[/bold] {rates.short_label()}")
-    console.print(
-        f"[bold]Effective rates (est$):[/bold] "
-        f"input ${eff.uncached_input:.2f} / cached ${eff.cached_input:.2f} / "
-        f"out ${eff.output:.2f} per 1M  "
-        f"[dim](= list × {cash_scale_val:.4g}; uniform scale)[/dim]"
-    )
-    console.print(
-        f"[bold]Cash scale (est$):[/bold] {cash_scale_val:.4g}  "
-        f"[dim]({cash_scale_src})[/dim]"
-    )
-    console.print(
-        f"[bold]TOTALS[/bold]  prompts={tot.n:,}  tokens={tot.total:,}  "
-        f"cache={tot.cache_pct:.1f}%  "
-        f"list$=${list_total:.2f}  "
-        f"[bold green]est$=${est_total:.2f}[/bold green]"
-    )
+    print_token_cost_summary(win, detail=detail, cost_mode=True, show_faq_hint=False)
     if show_invoice:
         console.print(
             f"  Invoice allocation: ${_invoice_total(invoice_usd, fixed_usd):.2f} "
@@ -882,204 +846,32 @@ def cost_report(
         )
 
     if api_estimate:
-        _print_api_breakdown(tot, rates, rates_label)
+        print_api_breakdown(tot, rates, rates_label)
 
     if advisor is not None:
-        _print_plan_advisor(advisor)
+        print_plan_advisor(
+            advisor,
+            auth_line=format_auth_plan_advisor_line(auth_st),
+            overage_scale=cfg_overage_scale(usage_cfg),
+            topoff_scenarios=topoff_scenarios,
+            active_topoff_discount=topoff_d,
+            detail=detail,
+        )
 
-    console.print()
-    console.print(COST_CAVEATS_SHORT, style="dim", markup=False)
+    if detail:
+        console.print(
+            "\n[dim]FAQ / ledgers: grok-utils usage info"
+            "  ·  wallet + history: grok-utils auth status [--history]"
+            "  ·  tune: --cash-scale / --topoff-discount / toml[/dim]"
+        )
+    else:
+        console.print(
+            "\n[dim]FAQ: grok-utils usage info"
+            "  ·  more: --detail / -v"
+            "  ·  wallet: grok-utils auth status[/dim]"
+        )
+
 
 def _invoice_total(invoice_usd: float | None, fixed_usd: float) -> float:
     return float(invoice_usd or 0) + float(fixed_usd or 0)
 
-
-def _print_plan_advisor(a: PlanAdvisorResult) -> None:
-    """Human panel: pure API vs SuperGrok vs Heavy."""
-    winner_labels = {
-        "api_est": "Pure API (est$)",
-        "supergrok": "SuperGrok $30 + tops",
-        "heavy": "SuperGrok Heavy",
-    }
-    console.print()
-    t = make_table(
-        f"Plan advisor (projected {a.project_days}d · window {a.window_days}d · same mix)",
-        ["Option", "Projected /mo", "Notes"],
-    )
-    t.add_row(
-        "Pure API (list$)",
-        f"${a.api_list_monthly:.2f}",
-        "list rates × local tokens",
-    )
-    t.add_row(
-        "Pure API (est$)",
-        f"${a.api_est_monthly:.2f}",
-        f"list$ × cash_scale {a.cash_scale:g}",
-    )
-    sg_note = (
-        f"weekly include ~${a.supergrok.weekly_include_usd:g}"
-        + (
-            f" → +${a.supergrok.overage_list_usd:.0f} list tops"
-            if a.supergrok.overage_list_usd > 0.5
-            else " → top-offs common at high volume"
-        )
-    )
-    t.add_row(
-        f"SuperGrok ${a.supergrok.sub_usd:g} + tops",
-        f"${a.supergrok.monthly:.2f}",
-        sg_note,
-    )
-    hv_note = (
-        f"weekly include ~${a.heavy.weekly_include_usd:g}"
-        + (
-            f"; +${a.heavy.overage_list_usd:.0f} overage"
-            if a.heavy.overage_list_usd > 0.5
-            else "; tops rare (safety net)"
-        )
-    )
-    t.add_row(
-        f"SuperGrok Heavy ${a.heavy.sub_usd:g}",
-        f"${a.heavy.monthly:.2f}",
-        hv_note,
-    )
-    console.print(t)
-
-    console.print(
-        f"  Window: list$ ${a.list_usd:.2f}  est$ ${a.est_usd:.2f}  "
-        f"tokens {_fmt_tokens(a.tokens)}  cache {a.cache_pct:.1f}%"
-    )
-    console.print(
-        f"  Run-rate: ~${a.daily_list:.2f} list/day · ~${a.daily_est:.2f} est/day · "
-        f"~{_fmt_tokens(int(a.daily_tokens))} tok/day"
-    )
-    wlabel = winner_labels.get(a.winner, a.winner)
-    # Soft language: projection only holds if this window's intensity continues
-    if a.save_vs_api_est > 0.5:
-        console.print(
-            f"  [bold]Best fit for this window[/bold] (if intensity holds): {wlabel}  "
-            f"(~${a.save_vs_api_est:.0f}/mo under est$ API at this run-rate)"
-        )
-    elif a.save_vs_api_est < -0.5 and a.winner == "api_est":
-        console.print(
-            f"  [bold]Best fit for this window[/bold] (if intensity holds): {wlabel}  "
-            f"(pay-as-you-go; no flat $300 commitment)"
-        )
-    else:
-        console.print(
-            f"  [bold]Best fit for this window[/bold] (if intensity holds): {wlabel}  "
-            f"(roughly break-even with est$ API at this run-rate)"
-        )
-    if a.heavy_cheaper_than_list_api:
-        console.print(
-            f"  Heavy undercuts [bold]list[/bold] API only while monthly list$ stays ≳ "
-            f"${a.heavy.sub_usd:g} (this window projects ${a.api_list_monthly:.0f}/mo)"
-        )
-    if a.heavy_breakeven_tokens_monthly is not None:
-        console.print(
-            f"  ≈ Heavy vs list API break-even ~{_fmt_tokens(int(a.heavy_breakeven_tokens_monthly))} "
-            f"tokens/mo at this cache mix (below that, pure API often wins)"
-        )
-    console.print(
-        "  [dim]Caveat: assumes this window's run-rate continues. "
-        "If usage is lower or highly variable month to month, pure API (est$) "
-        "is usually safer — no flat subscription. "
-        "Weekly pool $ are estimates; top-offs at list rates after 100%. "
-        "Confirm plan prices on x.ai.[/dim]"
-    )
-
-
-def _print_api_breakdown(tot: UsageBucket, rates: TokenRates, rates_label: str) -> None:
-    c_cached = tot.cached / 1e6 * rates.cached_input
-    c_uncached = tot.uncached_in / 1e6 * rates.uncached_input
-    c_out = (tot.output + tot.reasoning) / 1e6 * rates.output
-    c_tot = c_cached + c_uncached + c_out
-    console.print(f"\n[bold]PURE API ESTIMATE[/bold] — rates model: [cyan]{rates_label}[/cyan]")
-    console.print(f"  {rates.short_label()}")
-    console.print(
-        f"  Cached input  {tot.cached:>14,} × ${rates.cached_input:.2f}/1M = ${c_cached:,.2f}"
-    )
-    console.print(
-        f"  Uncached in   {tot.uncached_in:>14,} × ${rates.uncached_input:.2f}/1M = ${c_uncached:,.2f}"
-    )
-    console.print(
-        f"  Out+reasoning {tot.output + tot.reasoning:>14,} × ${rates.output:.2f}/1M = ${c_out:,.2f}"
-        f"  (out {tot.output:,} + reason {tot.reasoning:,})"
-    )
-    console.print(f"  Modeled API total                          ${c_tot:,.2f}")
-    console.print(
-        f"  Session log primary model id (info only): {tot.primary_model()}  "
-        f"— api$ uses --rates-model, not mixed per-turn models"
-    )
-
-
-def _cost_rough(
-    ctx: typer.Context,
-    *,
-    since: str | None,
-    by: str,
-    top: int,
-    json_out: bool,
-) -> None:
-    """Legacy message×400 × static MODEL_PRICES estimate."""
-    grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
-    sessions = list(iter_sessions(grok_home))
-
-    if since:
-        try:
-            cutoff = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
-            sessions = [
-                s
-                for s in sessions
-                if (s.created_at or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
-            ]
-        except (ValueError, TypeError, OverflowError):
-            warn(f"Ignoring bad --since {since}")
-
-    if not sessions:
-        warn("No data.")
-        return
-
-    from collections import defaultdict as _dd
-
-    groups: _dd[str, list[SessionSummary]] = _dd(list)
-    for s in sessions:
-        key = s.current_model_id if by == "model" else s.cwd
-        groups[key].append(s)
-
-    rows = []
-    total_est = 0.0
-    for k, ss in groups.items():
-        tokens = sum(s.num_messages for s in ss) * 400
-        model = ss[0].current_model_id if ss else "grok-build"
-        est = estimate_cost(tokens, model=model, is_output=True)
-        est += estimate_cost(int(tokens * 0.6), model=model, is_output=False)
-        total_est += est
-        rows.append((k, len(ss), round(est, 2)))
-
-    rows.sort(key=lambda r: -r[2])
-
-    if json_out:
-        import json
-
-        print(
-            json.dumps(
-                {
-                    "mode": "rough",
-                    "estimated_total_usd": round(total_est, 2),
-                    "by": by,
-                    "top": rows[:top],
-                },
-                indent=2,
-            )
-        )
-        return
-
-    t = make_table(f"Estimated Cost by {by} (ROUGH proxy, USD)", ["Key", "Sessions", "Est. $"])
-    for k, ns, est in rows[:top]:
-        t.add_row(k[:48] + ("…" if len(k) > 48 else ""), str(ns), f"{est:.2f}")
-    console.print(t)
-    console.print(f"\n[bold]Grand total (rough proxy): ${total_est:.2f}[/bold]")
-    warn(
-        "Legacy rough mode (message count × assumed tokens × static prices). "
-        "Prefer default token mode. See: grok-utils usage info"
-    )

@@ -9,6 +9,7 @@ from rich.console import Console
 
 from . import __version__
 from .commands import (
+    auth,
     backup,
     config,
     doctor,
@@ -96,6 +97,11 @@ app.add_typer(
 app.add_typer(plugins.app, name="plugins", help="Plugin discovery, inventory and validation")
 app.add_typer(hooks.app, name="hooks", help="Hooks listing, scaffolding and validation")
 app.add_typer(config.app, name="config", help="Inspect config.toml, paths and settings")
+app.add_typer(
+    auth.app,
+    name="auth",
+    help="Grok Build auth path: SuperGrok session vs API key (offline)",
+)
 app.add_typer(logs.app, name="logs", help="Quick log tailing and level filtering")
 
 # Top-level convenience commands (not a subcommand group)

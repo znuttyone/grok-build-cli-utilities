@@ -260,7 +260,7 @@ def filter_usage(
 
 def bucket_key(r: UsageRec, group: str) -> str:
     if group in ("app", "project"):
-        # app = short name; project alias keeps short name (cwd available in report if needed)
+        # app = short folder name; project = full cwd (disambiguates same name in different paths)
         return r.project if group == "app" else (r.cwd or r.project)
     if group == "model":
         return r.model or "unknown"

@@ -11,36 +11,46 @@ grok-utils usage info    # FAQ + ledgers (read this if $ numbers confuse you)
 
 Grok Build and this tool show **different meters**. They will **not** match dollar-for-dollar.
 
-| What you see | Where | Plain English |
-|---|---|---|
-| **Session usage → Cost $28** | Inside Build (`/usage`) | “How expensive was *this chat session* (since start or last resume)?” Build’s own number. |
-| **list$ ~$18** | `grok-utils usage cost` | “If the same tokens were billed at **public API list prices**, what would that be?” Offline math. |
-| **est$ ~$10** | same table | “Spend-style estimate” = list$ × a scale (default ~0.57) closer to **prepaid credit burn**. |
-| **Credits $28** | Build wallet UI | Money **left** in your prepaid balance (account-wide). |
-| **Weekly limit 100%** | Build wallet UI | Included weekly pool is **used up**. |
-| **Auto topup $20** | Build wallet UI | Account charged **$20** to refill when empty — **not** “this app cost $20.” |
+| What you see | Where | Plain English | Affects table? |
+|---|---|---|---|
+| **Session Cost $…** | Build `/usage` | This chat session’s own meter | **No** — not used in list$/est$ |
+| **list$** | `usage cost` | Tokens × **public API list rates** (local session files) | **Primary activity column** |
+| **Cache%** | same table | Share of input billed at the *cheaper cached* rate (context reuse). High cache% → lower list$ for the same tokens | **Yes** — part of list$ formula |
+| **est$** | same table | Spend lens: API ≈ list$; SuperGrok pool ≈ **0** Extra Credits; overage ≈ **1.9×** list$ | **Yes** — scale on list$ only |
+| **Extra Credits $** | Build UI / `auth status` / footer | Wallet balance left | **No** — snapshot only (not subtracted from list$/est$) |
+| **Weekly limit %** | Build UI / footer | Included SuperGrok pool used | **Only est$ regime** (pool vs overage). Not list$ |
+| **Auto topup $20** | Build UI | Card charge to *refill* Extra Credits | **No** — not “this app cost $20” and not in the table |
+| **Auth path** | `auth status` / footer | SuperGrok session vs API key | **Yes for est$** (path/mix). Not list$ |
+| **Wallet / auth line** | `usage cost` / `usage report` footer | `Extra Credits $… · weekly N% · SuperGrok session` | Snapshot only — see FAQ |
 
-**Example (real shape):** same long coding session can show Session Cost **~$28**, local **list$ ~$18**, **est$ ~$10**, while Credits jump after a **$20** auto top-up and Weekly limit hits **100%**. Tokens in the table may be a few % higher/lower than `/usage` because the UI is a snapshot and local logs keep every completed turn.
+**Auth matters for spend:** SuperGrok session wins over `XAI_API_KEY` unless `preferred_method = "api_key"`. Wallet snapshot comes from billing lines in `logs/unified.jsonl` (same class of data as the SuperGrok Usage panel — not turn usage files).
 
 **What to use when**
 
 | Goal | Use |
 |---|---|
-| Which app/day used the most? | `usage cost --by app` or `--by day` |
-| Rough real spend pace | **est$** (or re-fit with `--prepaid-usd` + `--credits-remaining`) |
+| Which app/day used the most? | `usage cost --by app` or `--by day` → **list$** |
+| Extra-credit burn estimate | **est$** (regime-aware) or re-fit with `--prepaid-usd` + `--credits-remaining` |
 | “How heavy was this session?” | Build **Session Cost** |
-| “Am I out of pool / did I top up?” | **Weekly limit** + **Credits** + **Auto topup** |
-| API vs SuperGrok vs Heavy? | `usage cost … --plan-advisor` (or `-P`) — only if this intensity **holds** |
+| “How much is left / weekly pool?” | `auth status` or cost footer wallet snapshot |
+| API vs SuperGrok vs Heavy? | `usage cost … --plan-advisor` (or `-P`) — if intensity **holds** |
+| Model promo −25% / free tops | `--topoff-discount 0.25` or `1.0` (+ plan-advisor scenarios) |
 
 ```bash
 # Typical day-to-day
 grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
 
-# Through latest local data (omit --to)
-grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
-
-# Plan comparison (soft recommendation if run-rate continues)
+# Plan comparison (compact; soft recommendation if run-rate continues)
 grok-utils usage cost --from 2026-07-18 --by app -m grok-4.5 -P
+
+# Slightly more plan detail (promo table + overage one-liner; FAQ still in usage info)
+grok-utils usage cost ... -P --detail
+
+# Model pack promo for est_cash$ (best-fit still full price)
+grok-utils usage cost ... -P --topoff-discount 0.25
+
+# Wallet snapshot
+grok-utils auth status
 ```
 
 Same FAQ text is printed by:
@@ -61,50 +71,53 @@ grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.5
 grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
 
 # Fit est$ to wallet burn for a window (one-shot recalibration)
+# e.g. start ~$10 + tops $60 − remaining $21.40 → --prepaid-usd 70 --credits-remaining 21.40
 grok-utils usage cost --from 2026-08-01 --by app \
-  --prepaid-usd 60 --credits-remaining 12.12
+  --prepaid-usd 70 --credits-remaining 21.40
 
-# Override scale for one run only
-grok-utils usage cost ... --cash-scale 0.57
+# Force one uniform scale for a window (optional legacy blend; disables path split)
+grok-utils usage cost ... --cash-scale 0.69
 
 # Plan advisor: pure API vs SuperGrok vs SuperGrok Heavy (run-rate → monthly)
 grok-utils usage cost --from 2026-07-18 --by app -m grok-4.5 --plan-advisor
 # short flag: -P
+
+# Model top-off promo for est_cash$ + plan-advisor scenario table
+grok-utils usage cost ... -P --topoff-discount 0.25
 ```
 
 | Column | Meaning |
 |---|---|
-| **list$** | Pure API list rates × local tokens (cache included). Transparent upper-bound style. |
-| **est$** | **list$ × cash_scale** — spend-oriented, closer to prepaid burn. |
+| **list$** | Pure API list rates × local tokens (cache included). Primary activity meter. |
+| **est$** | **list$ × path/regime scale** — Extra Credits burn lens (pool ≈ 0, overage ≈ 1.9×). |
+| **est_cash$** | When promo set: est$ × (1 − topoff_discount) — card $ on tops. |
 
-Footer (novice-friendly) plus **effective rates** (list × scale):
+### Cash scale (path/regime defaults)
 
-```text
-list$ = estimated $ at public API prices × your local tokens.
-est$  = spend-style estimate (list$ × cash_scale; closer to prepaid burn).
-Build Session Cost / Credits / Weekly limit are different meters — they will not match list$/est$.
-FAQ: grok-utils usage info   ·   Tune: --cash-scale or config cash_scale
-```
+Built-in (unless you force a single number):
 
-### Day-to-day cash scale (config)
+| Path / regime | Default scale |
+|---|---|
+| API key | **1.0** |
+| SuperGrok pool (weekly &lt; ~99%) | **0.0** |
+| SuperGrok overage (weekly ~100%) | **1.9** |
+| SuperGrok weekly% unknown | **1.0** + caveat |
 
-Set once so plain `usage cost` needs no scale flags:
-
-```toml
-# ~/.grok/grok-utils.toml   (also accepted: ~/.grok/config.toml)
-[usage]
-cash_scale = 0.57
-```
-
-**Cash scale priority:**
+**Force priority** (disables path split when set):
 
 1. `--prepaid-usd` + `--credits-remaining` → `scale = (prepaid − remaining) / list$`
 2. `--cash-scale N` (this run only)
-3. Config `[usage] cash_scale` in `~/.grok/grok-utils.toml` or `config.toml`
-4. Built-in default **0.57** (measured API prepaid burn / list$ ratio)
+3. Config `[usage] cash_scale` (optional legacy single number, e.g. multi-day blend)
 
-`grok-utils usage cost --help` documents `--cash-scale` and the toml path.  
-`grok-utils usage info` prints the full ledger caveats (including the toml example).
+```toml
+# ~/.grok/grok-utils.toml
+[usage]
+cash_scale_api = 1.0
+cash_scale_supergrok_pool = 0.0
+cash_scale_supergrok_overage = 1.9
+topoff_discount = 0.0                   # 0 full price; 0.25 / 1.0 to model promo
+topoff_discount_scenarios = [0.0, 0.25, 1.0]
+```
 
 ### Options
 
@@ -113,11 +126,13 @@ cash_scale = 0.57
 | `--from` / `--to` / `--since` | Inclusive dates; omit `--to` for through **latest** session data (`--since` = `--from`). If `--from` is earlier than any turn in the logs, a warning shows the real earliest date (table title uses the data span). |
 | `--by` | `app` \| `project` \| `model` \| `day` \| `week` \| `month` |
 | `-m` / `--rates-model` | List-rate table for **list$** (default `grok-4.5`) |
-| `--cash-scale` | Scale list$ → est$ (else toml / default 0.57) |
+| `--cash-scale` | Force uniform list$ → est$ scale (else path/regime defaults) |
 | `--prepaid-usd` / `--credits-remaining` | Set scale from wallet burn |
+| `--topoff-discount` | `0..1` pack promo for est_cash$ / plan scenarios (`1.0` = free tops) |
 | `--api-estimate` | Print list-rate breakdown |
-| `--plan-advisor` / `-P` | Compare pure API vs SuperGrok vs Heavy for this window |
-| `--json` | Machine-readable |
+| `--plan-advisor` / `-P` | Compact plan comparison (one Pure API row when scale=1) |
+| `--detail` / `-v` | Richer est$ mix + promo table + overage one-liner (FAQ still via `usage info`) |
+| `--json` | Machine-readable (`prepaid_balance_usd`, `weekly_usage_pct`, …) |
 
 ### Plan advisor (`--plan-advisor` / `-P`)
 
@@ -126,18 +141,32 @@ Projects this window’s run-rate to a month and compares:
 | Option | Model |
 |---|---|
 | Pure API (list$) | list rates × tokens, projected |
-| Pure API (est$) | list$ × cash_scale (prepaid-style) |
+| Pure API (est$) | list$ × API scale (default 1.0) |
 | SuperGrok ~$30 | Weekly pool (small) + **list-rate top-offs** after 100% |
 | SuperGrok Heavy ~$300 | Same system, **large** weekly pool; tops are a safety net |
 
-**Caveat:** “Best fit for this window” only holds **if this intensity continues**. If usage is lower or highly variable month to month, **pure API (est$)** is usually safer (no flat $300 commitment). Re-run on a quieter window before switching plans.
+Also prints a **top-off promo scenario** table (full / −25% / free tops by default) so you can model pack discounts without changing the full-price “best fit” winner.
+
+**Caveat:** “Best fit for this window” only holds **if this intensity continues** and assumes **full-price** tops. Promo rows are “if promo holds.” If usage is lower or highly variable, **pure API** is usually safer (no flat Heavy commitment). Heavy is **not** auto-detected from auth (same SuperGrok session offline).
 
 Exact weekly pool sizes are **not published** by xAI. Defaults are estimates in code / toml:
 
 ```toml
 # ~/.grok/grok-utils.toml
 [usage]
-cash_scale = 0.57
+# Force one scale (optional). Otherwise path + SuperGrok regime pick a default:
+# cash_scale = 0.69
+
+cash_scale_api = 1.0                    # API key path → est$ ≈ list$
+cash_scale_supergrok_pool = 0.0         # SuperGrok while weekly pool has room
+cash_scale_supergrok_overage = 1.9      # SuperGrok Extra Credits (weekly ~100%)
+# supergrok_regime = "auto"             # auto | pool | overage
+
+# Top-off pack promo: 0 = full price (normal). Model only — never auto-assumed.
+topoff_discount = 0.0                   # 0 | 0.25 | 1.0 (free tops)
+topoff_discount_scenarios = [0.0, 0.25, 1.0]  # plan-advisor card rows
+
+# Plan-advisor subscription knobs
 supergrok_usd = 30
 heavy_usd = 300
 supergrok_weekly_include_usd = 35
@@ -180,15 +209,27 @@ A later opt-in command (e.g. `usage rates-refresh`) could fetch these, cache the
 
 ## report
 
-Token path (`--tokens` or `--by app`) uses the same **list$ + est$** model as `usage cost` (cash_scale default / toml / `--cash-scale`). Plan-advisor stays on `usage cost` only.
+**Token path** (list$ primary, path/regime + auth-mix est$, Share(list$), wallet footer) matches **`usage cost`**:
+
+| How you invoke | Path |
+|---|---|
+| `--by app` (default) | Short names · **always** list$/est$ · **`--tokens` redundant** |
+| `--by project` | Full cwd paths; need **`--tokens`** for list$/est$ (else legacy messages) |
+| `--by model` / `day` **without** `--tokens` | Legacy session-summary report (no list$/est$) |
+| `--by model` / `day` **with** `--tokens` | Token path (list$/est$) |
+
+Plan-advisor (`-P`) stays on `usage cost` only.
 
 ```bash
-# By app → automatic token path + list$/est$
+# By app → token path automatically (--tokens optional / no-op)
 grok-utils usage report --by app --from 2026-08-01 -m grok-4.5
 
-# Explicit tokens + scale override
-grok-utils usage report --tokens --by app --from 2026-08-01 --to 2026-08-05 \
-  -m grok-4.5 --cash-scale 0.57
+# By day with list$/est$ (here --tokens matters)
+grok-utils usage report --by day --tokens --from 2026-08-01 -m grok-4.5
+
+# Force one uniform est$ scale for the window (optional)
+grok-utils usage report --by app --from 2026-08-01 --to 2026-08-05 \
+  -m grok-4.5 --cash-scale 0.69
 ```
 
 ## info
