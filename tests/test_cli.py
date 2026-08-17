@@ -201,7 +201,11 @@ def test_usage_report_json_and_spark(tmp_path: Path):
                 }
             )
         )
-    result = runner.invoke(app, ["-g", str(grok), "usage", "report", "--json", "--top", "1"])
+    # Legacy session-summary JSON (sessions/messages) is --by project without --tokens.
+    # Default --by app uses the token path and needs turn_completed.usage.
+    result = runner.invoke(
+        app, ["-g", str(grok), "usage", "report", "--by", "project", "--json", "--top", "1"]
+    )
     assert result.exit_code == 0
     assert "sessions" in result.output and "messages" in result.output
 
