@@ -215,18 +215,33 @@ def format_auth_short(status: AuthStatus) -> list[str]:
     return lines
 
 
-def format_auth_plan_advisor_line(status: AuthStatus) -> str | None:
-    if status.effective == "supergrok_session":
-        return (
-            "Auth now: SuperGrok session — Pure API row is a what-if "
-            "(not your current bill)"
-        )
+def format_auth_plan_advisor_line(
+    status: AuthStatus,
+    *,
+    subscription_tier: str | None = None,
+) -> str | None:
+    """Plan-advisor footer: which table rows are the current bill vs what-if."""
     if status.effective == "api_key":
         return (
             "Auth now: API key — SuperGrok/Heavy rows are what-if "
             "(not your current bill unless you grok login)"
         )
-    return None
+    if status.effective != "supergrok_session":
+        return None
+    if subscription_tier == "heavy":
+        return (
+            "Auth now: Heavy session — SuperGrok $30 and Pure API rows are "
+            "what-if (not your current bill). Heavy $300 is your current plan."
+        )
+    if subscription_tier == "supergrok":
+        return (
+            "Auth now: SuperGrok session — Pure API and Heavy rows are "
+            "what-if (not your current bill)."
+        )
+    return (
+        "Auth now: SuperGrok session — Pure API row is a what-if "
+        "(not your current bill)"
+    )
 
 
 def _method_from_ctx(ctx: dict[str, Any]) -> str | None:
@@ -374,31 +389,94 @@ def weekly_usage_at(
     return chosen
 
 
+def normalize_subscription_tier(raw: str | None) -> str | None:
+    """Map billing ``subscriptionTier`` → ``heavy`` | ``supergrok`` | None."""
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if not s:
+        return None
+    if "heavy" in s:
+        return "heavy"
+    if "supergrok" in s or s in ("super", "sg"):
+        return "supergrok"
+    return None
+
+
+def subscription_tier_label(tier: str | None) -> str:
+    """Human plan name for footers (Heavy / SuperGrok / subscription)."""
+    if tier == "heavy":
+        return "Heavy"
+    if tier == "supergrok":
+        return "SuperGrok"
+    return "subscription"
+
+
+def subscription_tier_at(
+    ts: datetime,
+    timeline: list[tuple[datetime, str]],
+) -> str | None:
+    """Last known normalized tier at or before ts; None if before first sample."""
+    if not timeline:
+        return None
+    t = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    chosen: str | None = None
+    for dt, tier in timeline:
+        if dt <= t:
+            chosen = tier
+        else:
+            break
+    return chosen
+
+
+def _empty_billing(
+    *,
+    prepaid_usd: float | None = None,
+) -> BillingSnapshot:
+    return BillingSnapshot(
+        weekly_timeline=[],
+        prepaid_usd=prepaid_usd,
+        weekly_pct=None,
+        subscription_tier=None,
+        subscription_tier_raw=None,
+        tier_timeline=[],
+    )
+
+
 @dataclass
 class BillingSnapshot:
-    """Latest SuperGrok billing sample from unified.jsonl (one log pass)."""
+    """Latest SuperGrok/Heavy billing sample from unified.jsonl (one log pass)."""
 
     weekly_timeline: list[tuple[datetime, float]]
     prepaid_usd: float | None
     weekly_pct: float | None
+    subscription_tier: str | None = None  # heavy | supergrok
+    subscription_tier_raw: str | None = None
+    tier_timeline: list[tuple[datetime, str]] = field(default_factory=list)
+
+
+# Cost windows need the upgrade change-point; 8MB covers typical unified.jsonl.
+DEFAULT_BILLING_SCAN_BYTES = 8_000_000
 
 
 def load_billing_snapshot(
     grok_home: Path | str,
     *,
-    max_bytes: int = 2_000_000,
+    max_bytes: int = DEFAULT_BILLING_SCAN_BYTES,
 ) -> BillingSnapshot:
-    """Parse billing: fetched credits config once → weekly timeline + prepaid $."""
+    """Parse billing: weekly %, prepaid $, and subscriptionTier timeline."""
     log_path = Path(grok_home) / "logs" / "unified.jsonl"
     if not log_path.is_file():
-        return BillingSnapshot(weekly_timeline=[], prepaid_usd=None, weekly_pct=None)
+        return _empty_billing()
     try:
         size = log_path.stat().st_size
     except OSError:
-        return BillingSnapshot(weekly_timeline=[], prepaid_usd=None, weekly_pct=None)
+        return _empty_billing()
 
     raw: list[tuple[datetime, float]] = []
+    raw_tiers: list[tuple[datetime, str, str]] = []
     last_prepaid: float | None = None
+    last_tier_raw: str | None = None
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             if size > max_bytes:
@@ -411,7 +489,12 @@ def load_billing_snapshot(
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                cfg = (obj.get("ctx") or {}).get("config") or {}
+                ctx = obj.get("ctx") or {}
+                if not isinstance(ctx, dict):
+                    ctx = {}
+                cfg = ctx.get("config") or {}
+                if not isinstance(cfg, dict):
+                    cfg = {}
                 # prepaid (cents → USD)
                 pb = cfg.get("prepaidBalance") or {}
                 if isinstance(pb, dict) and pb.get("val") is not None:
@@ -419,38 +502,57 @@ def load_billing_snapshot(
                         last_prepaid = float(pb["val"]) / 100.0
                     except (TypeError, ValueError):
                         pass
+                ts_s = str(obj.get("ts") or "")
+                raw_ts = ts_s.replace("Z", "+00:00") if ts_s.endswith("Z") else ts_s
+                try:
+                    dt = datetime.fromisoformat(raw_ts) if raw_ts else None
+                    if dt is not None and dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                except (TypeError, ValueError):
+                    dt = None
+                # Plan sits next to config (not inside it): ctx.subscriptionTier
+                raw_tier = ctx.get("subscriptionTier") or cfg.get("subscriptionTier")
+                if isinstance(raw_tier, str) and raw_tier.strip() and dt is not None:
+                    norm = normalize_subscription_tier(raw_tier)
+                    if norm:
+                        last_tier_raw = raw_tier.strip()
+                        raw_tiers.append((dt, norm, raw_tier.strip()))
                 # weekly %
                 cu = cfg.get("creditUsagePercent")
-                ts_s = str(obj.get("ts") or "")
-                if cu is None or not ts_s:
+                if cu is None or dt is None:
                     continue
                 try:
                     pct = float(cu)
-                    raw_ts = ts_s.replace("Z", "+00:00") if ts_s.endswith("Z") else ts_s
-                    dt = datetime.fromisoformat(raw_ts)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
                 except (TypeError, ValueError):
                     continue
                 raw.append((dt, pct))
     except OSError:
-        return BillingSnapshot(weekly_timeline=[], prepaid_usd=last_prepaid, weekly_pct=None)
+        return _empty_billing(prepaid_usd=last_prepaid)
 
-    if not raw:
-        return BillingSnapshot(
-            weekly_timeline=[], prepaid_usd=last_prepaid, weekly_pct=None
-        )
     raw.sort(key=lambda x: x[0])
-    out: list[tuple[datetime, float]] = [raw[0]]
-    for dt, pct in raw[1:]:
-        if abs(pct - out[-1][1]) >= 0.5:
-            out.append((dt, pct))
-        else:
-            out[-1] = (dt, pct)
+    out: list[tuple[datetime, float]] = []
+    if raw:
+        out = [raw[0]]
+        for dt, pct in raw[1:]:
+            if abs(pct - out[-1][1]) >= 0.5:
+                out.append((dt, pct))
+            else:
+                out[-1] = (dt, pct)
+
+    raw_tiers.sort(key=lambda x: x[0])
+    tier_out: list[tuple[datetime, str]] = []
+    for dt, norm, _raw in raw_tiers:
+        if not tier_out or tier_out[-1][1] != norm:
+            tier_out.append((dt, norm))
+
+    last_norm = tier_out[-1][1] if tier_out else None
     return BillingSnapshot(
         weekly_timeline=out,
         prepaid_usd=last_prepaid,
         weekly_pct=out[-1][1] if out else None,
+        subscription_tier=last_norm,
+        subscription_tier_raw=last_tier_raw,
+        tier_timeline=tier_out,
     )
 
 
@@ -479,3 +581,12 @@ def latest_prepaid_balance_usd(
 ) -> float | None:
     """Latest prepaidBalance.val from billing log (cents → USD)."""
     return load_billing_snapshot(grok_home, max_bytes=max_bytes).prepaid_usd
+
+
+def latest_subscription_tier(
+    grok_home: Path | str,
+    *,
+    max_bytes: int = DEFAULT_BILLING_SCAN_BYTES,
+) -> str | None:
+    """Latest normalized subscription tier (heavy | supergrok) from billing log."""
+    return load_billing_snapshot(grok_home, max_bytes=max_bytes).subscription_tier

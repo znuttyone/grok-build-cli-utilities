@@ -12,6 +12,12 @@ from rich.progress import Progress
 
 from .pricing import TokenRates, api_estimate_usd, rates_for_model
 
+# xAI / Build: 1 USD = 10^10 costUsdTicks. /usage Session Cost uses this.
+# https://docs.x.ai/developers/cost-tracking
+TICKS_PER_USD = 10_000_000_000
+# Prompt ≥ this many tokens bills the whole request at 2× list rates.
+LONG_CONTEXT_PROMPT_TOKENS = 200_000
+
 
 @dataclass
 class UsageRec:
@@ -73,15 +79,28 @@ class UsageBucket:
         return max(self.models.items(), key=lambda kv: kv[1])[0]
 
     def api_est(self, rates: TokenRates | None = None) -> float:
-        """Estimate pure-API $ using rates (default: primary session model rates)."""
+        """Rate-table estimate (no ticks). Prefer ``list_usd`` for /usage-matching $."""
         r = rates or rates_for_model(self.primary_model())
+        out_n = completion_tokens(
+            output=self.output,
+            reasoning=self.reasoning,
+            total=self.total,
+            input_tokens=self.input,
+        )
         return api_estimate_usd(
             cached=self.cached,
             uncached_in=self.uncached_in,
-            output=self.output,
-            reasoning=self.reasoning,
+            output=out_n,
+            reasoning=0,
             rates=r,
+            reason_as_output=False,
         )
+
+    def list_usd(self, rates: TokenRates | None = None, *, prefer_ticks: bool = True) -> float:
+        """list$ for this bucket: costUsdTicks/1e10 when present, else rate table."""
+        if prefer_ticks and self.ticks > 0:
+            return list_price_usd(self.ticks)
+        return self.api_est(rates)
 
     def to_dict(self, rates: TokenRates | None = None) -> dict:
         return {
@@ -424,8 +443,71 @@ def allocate_paygo_by_type(
 
 
 def list_price_usd(ticks: int) -> float:
-    """Naive internal list-price conversion (usually overstates cash)."""
-    return ticks / 1e9
+    """Convert Build/API ``costUsdTicks`` to USD (1 USD = 10^10 ticks)."""
+    return float(ticks) / float(TICKS_PER_USD)
+
+
+def completion_tokens(
+    *,
+    output: int,
+    reasoning: int,
+    total: int = 0,
+    input_tokens: int = 0,
+) -> int:
+    """Tokens billed at the output rate.
+
+    Build logs ``outputTokens`` as completion+reasoning (input+output == total).
+    Only add reasoning when the totals say it is extra.
+    """
+    out = max(int(output), 0)
+    reason = max(int(reasoning), 0)
+    if int(total) > 0 and abs(int(total) - (int(input_tokens) + out)) <= 1:
+        return out
+    return out + reason
+
+
+def rates_for_prompt(rates: TokenRates, prompt_tokens: int) -> TokenRates:
+    """2× list rates when the prompt reaches the published 200k long-context tier."""
+    if int(prompt_tokens) < LONG_CONTEXT_PROMPT_TOKENS:
+        return rates
+    return TokenRates(
+        uncached_input=rates.uncached_input * 2.0,
+        cached_input=rates.cached_input * 2.0,
+        output=rates.output * 2.0,
+        label=f"{rates.label or 'rates'} ≥200k",
+    )
+
+
+def turn_list_usd(
+    r: UsageRec | object,
+    rates: TokenRates | None = None,
+    *,
+    prefer_ticks: bool = True,
+) -> float:
+    """list$ for one turn: ticks/1e10 (matches /usage Cost) or reconstructed rates."""
+    ticks = int(getattr(r, "ticks", 0) or 0)
+    if prefer_ticks and ticks > 0:
+        return list_price_usd(ticks)
+    cached = int(getattr(r, "cached", 0) or 0)
+    inn = int(getattr(r, "input", 0) or 0)
+    output = int(getattr(r, "output", 0) or 0)
+    reasoning = int(getattr(r, "reasoning", 0) or 0)
+    total = int(getattr(r, "total", 0) or 0)
+    model = getattr(r, "model", None)
+    base = rates or rates_for_model(str(model) if model else None)
+    # Long-context 2× is already inside costUsdTicks. Do not apply it to
+    # turn-aggregate input (a 1M-token turn may be many <200k calls).
+    out_n = completion_tokens(
+        output=output, reasoning=reasoning, total=total, input_tokens=inn
+    )
+    return api_estimate_usd(
+        cached=cached,
+        uncached_in=max(inn - cached, 0),
+        output=out_n,
+        reasoning=0,
+        rates=base,
+        reason_as_output=False,
+    )
 
 
 def parse_iso_date(s: str) -> date:

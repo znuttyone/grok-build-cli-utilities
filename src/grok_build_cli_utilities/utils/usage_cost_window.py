@@ -59,9 +59,14 @@ class TokenCostWindow:
     auth_st: AuthStatus
     weekly_pct: float | None
     prepaid_balance: float | None
+    subscription_tier: str | None  # heavy | supergrok | None
+    subscription_tier_raw: str | None
+    window_tiers: list[str]
     usage_cfg: dict[str, Any]
     rates: TokenRates
     rates_label: str
+    list_source: str  # "ticks" | "rates"
+    prefer_ticks: bool
     group: str
     d_from: date | None
     d_to: date | None
@@ -73,6 +78,10 @@ class TokenCostWindow:
     def est_for_key(self, key: str) -> float:
         """est$ for a bucket key (0 if empty)."""
         return float(self.est_by_key.get(key, 0.0))
+
+    def list_for_key(self, key: str) -> float:
+        """list$ for a bucket key (auth-mix total; 0 if empty)."""
+        return float(self.mix.list_by_key.get(key, 0.0))
 
 
 def build_token_cost_window(
@@ -93,6 +102,9 @@ def build_token_cost_window(
     result_latest: date | None = None,
 ) -> TokenCostWindow:
     """Build list$/est$ for filtered records (shared by cost + report)."""
+    # Omit --rates-model → prefer costUsdTicks (same $ as Build /usage Cost).
+    # Pass -m to force a reconstructed rate table (ticks ignored).
+    prefer_ticks = not (rates_model and str(rates_model).strip())
     rates_label, rates = resolve_rates_model(rates_model)
     usage_cfg = load_usage_config(grok_home)
     auth_st = detect_auth(grok_home)
@@ -100,6 +112,7 @@ def build_token_cost_window(
     weekly_pct = billing.weekly_pct
     prepaid_balance = billing.prepaid_usd
     weekly_tl = billing.weekly_timeline
+    tier_tl = billing.tier_timeline
 
     cfg_scale = usage_cfg.get("cash_scale")
     if cfg_scale is not None:
@@ -110,19 +123,19 @@ def build_token_cost_window(
 
     buckets = aggregate(records, group)
     tot = total_bucket(records)
-    list_total = tot.api_est(rates)
+    list_seed = tot.list_usd(rates, prefer_ticks=prefer_ticks)
 
     force_uniform: float | None = None
     force_src: str | None = None
     if (
         prepaid_usd is not None
         and credits_remaining is not None
-        and list_total > 0
+        and list_seed > 0
     ):
         force_uniform, force_src = resolve_cash_scale(
             prepaid_usd=prepaid_usd,
             credits_remaining=credits_remaining,
-            list_total_usd=list_total,
+            list_total_usd=list_seed,
         )
     elif cash_scale is not None:
         force_uniform, force_src = float(cash_scale), f"cli --cash-scale {cash_scale:g}"
@@ -142,13 +155,17 @@ def build_token_cost_window(
         usage_cfg=usage_cfg,
         weekly_usage_pct=weekly_pct,
         weekly_timeline=weekly_tl,
+        tier_timeline=tier_tl,
         fallback_auth=fallback,
         force_uniform_scale=force_uniform,
         force_uniform_src=force_src,
         group_key_fn=_gkey,
+        prefer_ticks=prefer_ticks,
     )
+    list_total = mix.list_total
     est_total = mix.est_total
     est_by_key = dict(mix.est_by_key)
+    list_source = "ticks" if prefer_ticks and tot.ticks > 0 else "rates"
 
     if force_uniform is not None:
         cash_scale_val, cash_scale_src = force_uniform, force_src or "uniform"
@@ -170,7 +187,17 @@ def build_token_cost_window(
     est_cash_total = apply_topoff_discount(est_total, topoff_d)
 
     # Sort buckets by list$ (activity)
-    buckets.sort(key=lambda b: -b.api_est(rates))
+    buckets.sort(key=lambda b: -float(mix.list_by_key.get(b.key, 0.0)))
+
+    window_tiers: list[str] = []
+    for s in mix.slices:
+        p = str(getattr(s, "path", "") or "")
+        if p.startswith("heavy") and "heavy" not in window_tiers:
+            window_tiers.append("heavy")
+        elif p.startswith("supergrok") and "supergrok" not in window_tiers:
+            window_tiers.append("supergrok")
+    if billing.subscription_tier and billing.subscription_tier not in window_tiers:
+        window_tiers.append(billing.subscription_tier)
 
     return TokenCostWindow(
         records=records,
@@ -190,9 +217,14 @@ def build_token_cost_window(
         auth_st=auth_st,
         weekly_pct=weekly_pct,
         prepaid_balance=prepaid_balance,
+        subscription_tier=billing.subscription_tier,
+        subscription_tier_raw=billing.subscription_tier_raw,
+        window_tiers=window_tiers,
         usage_cfg=usage_cfg,
         rates=rates,
         rates_label=rates_label,
+        list_source=list_source,
+        prefer_ticks=prefer_ticks,
         group=group,
         d_from=d_from,
         d_to=d_to,

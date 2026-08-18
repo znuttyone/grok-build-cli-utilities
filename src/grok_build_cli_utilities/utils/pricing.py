@@ -29,6 +29,7 @@ subscription cash and may not match a specific paygo key's effective mix.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,8 +65,10 @@ class TokenRates:
 
 
 # --- List rates (USD / 1M), standard context (≤200k). Long-context 2× not applied in v1. ---
-# grok-4.5 console Pricing (2026-08-05): $2 / $0.30 / $6 (≤200k);
-# long-context tier $4 / $0.60 / $12 (>200k) not applied in v1.
+# docs.x.ai/developers/pricing (2026-08-13):
+#   grok-4.6 ≤200k $2 / $0.50 / $6; ≥200k $4 / $1 / $12 (long-context not applied in v1)
+#   grok-4.5 ≤200k $2 / $0.30 / $6; ≥200k $4 / $0.60 / $12
+GROK_46_RATES = TokenRates(2.00, 0.50, 6.00, label="grok-4.6")
 GROK_45_RATES = TokenRates(2.00, 0.30, 6.00, label="grok-4.5")
 GROK_BUILD_RATES = TokenRates(1.00, 0.20, 2.00, label="grok-build-0.1")
 GROK_43_RATES = TokenRates(1.25, 0.20, 2.50, label="grok-4.3")
@@ -75,14 +78,18 @@ GROK_3_RATES = TokenRates(3.00, 0.75, 15.00, label="grok-3")
 GROK_3_MINI_RATES = TokenRates(0.30, 0.07, 0.50, label="grok-3-mini")
 
 # Default cost model for estimates (user can override with --rates-model).
-DEFAULT_RATES_MODEL = "grok-4.5"
-DEFAULT_RATES = GROK_45_RATES
+# grok-4.6 is the Grok Build default as of 2026-08-12.
+DEFAULT_RATES_MODEL = "grok-4.6"
+DEFAULT_RATES = GROK_46_RATES
 
 # Canonical profile names (what --rates-model accepts) → rates
 RATE_PROFILES: dict[str, TokenRates] = {
+    "grok-4.6": GROK_46_RATES,
+    "4.6": GROK_46_RATES,
+    "grok-4.6-build": GROK_46_RATES,  # Build often logs this id; use 4.6 list rates
     "grok-4.5": GROK_45_RATES,
     "4.5": GROK_45_RATES,
-    "grok-4.5-build": GROK_45_RATES,  # Build often logs this id; use 4.5 list rates
+    "grok-4.5-build": GROK_45_RATES,
     "grok-build-0.1": GROK_BUILD_RATES,
     "grok-build": GROK_BUILD_RATES,
     "build": GROK_BUILD_RATES,
@@ -98,6 +105,8 @@ RATE_PROFILES: dict[str, TokenRates] = {
 
 # Fuzzy match for session model ids (same objects as profiles)
 MODEL_RATES: dict[str, TokenRates] = {
+    "grok-4.6-build": GROK_46_RATES,
+    "grok-4.6": GROK_46_RATES,
     "grok-4.5-build": GROK_45_RATES,
     "grok-4.5": GROK_45_RATES,
     "grok-build-0.1": GROK_BUILD_RATES,
@@ -114,6 +123,7 @@ MODEL_RATES: dict[str, TokenRates] = {
 def list_rate_profiles() -> list[str]:
     """Canonical profile names for help text (deduped, preferred order)."""
     preferred = [
+        "grok-4.6",
         "grok-4.5",
         "grok-build-0.1",
         "grok-4.3",
@@ -464,27 +474,33 @@ def estimate_with_auth_mix(
     usage_cfg: dict[str, Any] | None = None,
     weekly_usage_pct: float | None = None,
     weekly_timeline: list[Any] | None = None,
+    tier_timeline: list[Any] | None = None,
     fallback_auth: str = "unknown",
     force_uniform_scale: float | None = None,
     force_uniform_src: str | None = None,
     group_key_fn: Any | None = None,
+    prefer_ticks: bool = True,
 ) -> AuthMixResult:
     """Apply path-specific scales using auth change-points (or one forced scale).
 
     When force_uniform_scale is set (--cash-scale / prepaid fit), all turns use it.
     Otherwise each turn is labeled from the log timeline and scaled by path/regime.
 
-    SuperGrok pool vs overage uses **weekly % at turn time** from billing log when
-    available — not "current week only" (which zeroed historical top-off burn).
-    When weekly % is missing for a SuperGrok turn, scale is list$ (regime unknown).
+    SuperGrok/Heavy pool vs overage uses **weekly % at turn time** from billing
+    log when available — not "current week only" (which zeroed historical
+    top-off burn). When weekly % is missing for a session turn, scale is list$
+    (regime unknown). ``subscriptionTier`` (same billing lines) relabels
+    SuperGrok slices as Heavy when the log says so at turn time.
 
     Optional group_key_fn(record) → str accumulates est$/list$ per key in one pass
     (avoids re-running mix per report bucket).
     """
     from .auth_status import (  # local import avoids cycle issues
         auth_effective_at,
+        subscription_tier_at,
         weekly_usage_at,
     )
+    from .usage_tokens import turn_list_usd
 
     cfg = usage_cfg or {}
     list_total = 0.0
@@ -495,17 +511,7 @@ def estimate_with_auth_mix(
     list_by_key_path: dict[str, dict[str, float]] = {}
 
     for r in records:
-        list_b = float(
-            api_estimate_usd(
-                cached=int(getattr(r, "cached", 0) or 0),
-                uncached_in=max(
-                    0, int(getattr(r, "input", 0) or 0) - int(getattr(r, "cached", 0) or 0)
-                ),
-                output=int(getattr(r, "output", 0) or 0),
-                reasoning=int(getattr(r, "reasoning", 0) or 0),
-                rates=rates,
-            )
-        )
+        list_b = float(turn_list_usd(r, rates, prefer_ticks=prefer_ticks))
         list_total += list_b
         ts = getattr(r, "ts", None)
         if force_uniform_scale is not None:
@@ -536,7 +542,7 @@ def estimate_with_auth_mix(
                     auth_effective=auth_for_scale,
                     weekly_usage_pct=w_pct,
                 )
-            # Split SuperGrok by regime so pool/overage/unknown don't collapse
+            # Split SuperGrok/Heavy by regime so pool/overage/unknown don't collapse
             if path == "supergrok_session":
                 if "unknown" in scale_src or w_pct is None:
                     path = "supergrok_unknown"
@@ -545,6 +551,10 @@ def estimate_with_auth_mix(
                 elif scale >= 1.5:
                     path = "supergrok_overage"
                 # else mid-scale custom → keep supergrok_session
+                if ts is not None and tier_timeline:
+                    tier = subscription_tier_at(ts, tier_timeline)
+                    if tier == "heavy" and path.startswith("supergrok_"):
+                        path = "heavy_" + path[len("supergrok_") :]
 
         est_b = list_b * scale
         if group_key_fn is not None:
@@ -645,8 +655,21 @@ def load_usage_config(grok_home: Path | str) -> dict[str, Any]:
     return {}
 
 
+def _model_id_hit(needle: str, haystack: str) -> bool:
+    """Substring match that does not let grok-4 steal grok-4.6.
+
+    A hit must not be preceded by a digit/dot, and must not be followed by
+    ``.`` + digit (version continuation). So ``grok-4`` matches ``grok-4-0709``
+    but not ``grok-4.6`` / ``grok-4.6-build``.
+    """
+    if not needle or needle == "default":
+        return False
+    pat = rf"(?<![\d.]){re.escape(needle)}(?!\.\d)"
+    return re.search(pat, haystack) is not None
+
+
 def rates_for_model(model: str | None = None) -> TokenRates:
-    """Resolve rates for a model id or profile name (fuzzy). Default: grok-4.5."""
+    """Resolve rates for a model id or profile name (fuzzy). Default: grok-4.6."""
     if not model:
         return DEFAULT_RATES
     key = model.lower().strip()
@@ -657,13 +680,13 @@ def rates_for_model(model: str | None = None) -> TokenRates:
     for name in sorted(MODEL_RATES.keys(), key=len, reverse=True):
         if name == "default":
             continue
-        if name in key or key in name:
+        if _model_id_hit(name, key) or _model_id_hit(key, name):
             return MODEL_RATES[name]
     return DEFAULT_RATES
 
 
 def resolve_rates_model(rates_model: str | None) -> tuple[str, TokenRates]:
-    """Return (canonical_label, rates) for --rates-model (default grok-4.5)."""
+    """Return (canonical_label, rates) for --rates-model (default grok-4.6)."""
     if not rates_model or not rates_model.strip():
         return DEFAULT_RATES_MODEL, DEFAULT_RATES
     key = rates_model.lower().strip()
@@ -696,7 +719,7 @@ def api_estimate_usd(
 # SuperGrok and Heavy share weekly pool + list-rate top-offs after 100%.
 # Exact pool $ is not published; defaults are estimates (override in toml).
 # When xAI announces plan price changes: update these + PRICES_LAST_VERIFIED.
-PRICES_LAST_VERIFIED = "2026-08-06"  # ISO date; bump when defaults re-checked
+PRICES_LAST_VERIFIED = "2026-08-13"  # ISO date; bump when defaults re-checked
 DEFAULT_SUPERGROK_USD = 30.0
 DEFAULT_HEAVY_USD = 300.0
 DEFAULT_SUPERGROK_WEEKLY_INCLUDE_USD = 35.0  # small — heavy Build exhausts fast

@@ -113,6 +113,10 @@ def doctor(
         bits: list[str] = []
         if bill.prepaid_usd is not None:
             bits.append(f"credits ${bill.prepaid_usd:.2f}")
+        if bill.subscription_tier == "heavy":
+            bits.append("Heavy")
+        elif bill.subscription_tier == "supergrok":
+            bits.append("SuperGrok")
         if bill.weekly_pct is not None:
             bits.append(f"weekly {bill.weekly_pct:g}%")
         if bits:

@@ -5,6 +5,8 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **SuperGrok vs Heavy from billing log** (`ctx.subscriptionTier` on `billing: fetched credits config`). Cost mix/wallet/auth status/`-P` label **Heavy pool** vs SuperGrok; planner footer marks the **current plan** and treats the other subscription row as a what-if. Session `/usage` turns do not store the plan.
+- **grok-4.6 list-rate profile** (`-m grok-4.6` / `4.6` / `grok-4.6-build`): $2 / $0.50 / $6 per 1M (≤200k).
 - **`grok-utils auth status`**: SuperGrok session vs API key; optional `--history`; **Extra Credits $** + **weekly %** from billing log.
 - Auth path + wallet snapshot on `usage cost` footer / JSON (`prepaid_balance_usd`, `weekly_usage_pct`).
 - **Path/regime cash scales**: API 1.0, SuperGrok pool 0.0, overage 1.9; weekly% unknown → list$ scale + caveat.
@@ -14,6 +16,8 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 - `est_cash$` = est$ × (1 − discount) when promo modeled; primary plan “best fit” stays full price.
 
 ### Changed
+- **list$** uses Build **`costUsdTicks ÷ 10^10`** (xAI cost tracking — same $ as `/usage` Session Cost). Pass `-m` to reconstruct from a published rate table instead. Tick conversion was previously ÷1e9 (10× too high).
+- **list$ default rate table** (fallback / `-m`) is **grok-4.6** ($2 / $0.50 / $6 per 1M, ≤200k; verified 2026-08-13). Reconstruction does not double-count reasoning already inside `outputTokens`. Pin older 4.5 cache rate with `-m grok-4.5` ($2 / $0.30 / $6). `grok-4.6*` no longer fuzzy-matches grok-4 ($3 / $15).
 - Default est$ is path/regime-aware (not a single 0.57 blend). Multi-day blends remain optional via `--cash-scale` / prepaid-fit.
 - Top-off discount clamp is **0..1** (was 0..0.95) so free-credit scenarios work.
 - **`usage cost` human output simplified**: compact TOTALS / est$ mix / wallet line; plan-advisor collapses duplicate Pure API rows; **`--detail` / `-v`** adds promo table + overage one-liner only (long caveats → `usage info`).

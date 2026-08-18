@@ -9,9 +9,9 @@ import typer
 from ..utils.auth_status import (
     auth_history_change_points,
     detect_auth,
-    latest_prepaid_balance_usd,
-    latest_weekly_usage_percent,
     load_auth_history,
+    load_billing_snapshot,
+    subscription_tier_label,
 )
 from ..utils.common import console, get_grok_home, make_table, warn
 
@@ -38,14 +38,20 @@ def auth_status(
 
     hist_events = load_auth_history(grok_home) if history else []
     changes = auth_history_change_points(hist_events) if hist_events else []
-    prepaid = latest_prepaid_balance_usd(grok_home)
-    weekly_pct = latest_weekly_usage_percent(grok_home)
+    bill = load_billing_snapshot(grok_home)
+    prepaid = bill.prepaid_usd
+    weekly_pct = bill.weekly_pct
+    plan = bill.subscription_tier
+    plan_raw = bill.subscription_tier_raw
+    plan_lab = subscription_tier_label(plan) if plan else None
 
     if json_out:
         payload = {
             "auth": status.as_dict(),
             "extra_credits_usd": prepaid,
             "weekly_usage_pct": weekly_pct,
+            "subscription_tier": plan,
+            "subscription_tier_raw": plan_raw,
             "history": [e.as_dict() for e in changes] if history else None,
             "history_event_count": len(hist_events) if history else None,
         }
@@ -69,18 +75,25 @@ def auth_status(
         console.print(f"  [dim]• {n}[/dim]")
 
     # Billing snapshot from unified.jsonl (same source as SuperGrok Usage panel)
-    console.print("\n[bold]SuperGrok wallet snapshot[/bold] [dim](from billing log)[/dim]")
+    console.print("\n[bold]Subscription wallet snapshot[/bold] [dim](from billing log)[/dim]")
+    if plan_lab:
+        raw_bit = f"  ({plan_raw})" if plan_raw and plan_raw != plan_lab else ""
+        console.print(f"  Plan: [cyan]{plan_lab}[/cyan]{raw_bit}")
+    else:
+        console.print("  Plan: [dim](no subscriptionTier in billing log yet)[/dim]")
     if prepaid is not None:
         console.print(f"  Extra Credits: [cyan]${prepaid:.2f}[/cyan]")
     else:
         console.print("  Extra Credits: [dim](no billing sample in logs yet)[/dim]")
+    week_name = plan_lab or "SuperGrok"
     if weekly_pct is not None:
-        console.print(f"  Weekly SuperGrok limit: [cyan]{weekly_pct:g}%[/cyan] used")
+        console.print(f"  Weekly {week_name} limit: [cyan]{weekly_pct:g}%[/cyan] used")
     else:
-        console.print("  Weekly SuperGrok limit: [dim](no billing sample in logs yet)[/dim]")
+        console.print(f"  Weekly {week_name} limit: [dim](no billing sample in logs yet)[/dim]")
     console.print(
-        "  [dim]Best-effort last fetch from ~/.grok/logs/unified.jsonl — "
-        "not live network; stale until Build refetches billing.[/dim]"
+        "  [dim]Best-effort last fetch from ~/.grok/logs/unified.jsonl "
+        "(ctx.subscriptionTier + wallet) — not live network; stale until "
+        "Build refetches billing. Session /usage turns do not store the plan.[/dim]"
     )
 
     console.print()

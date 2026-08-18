@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .auth_status import format_auth_plan_advisor_line, format_auth_short
+from .auth_status import (
+    format_auth_plan_advisor_line,
+    format_auth_short,
+    subscription_tier_label,
+)
 from .common import console, make_table
 from .pricing import (
     DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE,
@@ -55,6 +59,10 @@ def print_auth_mix_summary(
         "supergrok_pool": "SuperGrok pool",
         "supergrok_overage": "SuperGrok overage",
         "supergrok_unknown": "SuperGrok (?)",
+        "heavy_session": "Heavy",
+        "heavy_pool": "Heavy pool",
+        "heavy_overage": "Heavy overage",
+        "heavy_unknown": "Heavy (?)",
         "unknown": "unknown",
         "uniform": "uniform",
     }
@@ -83,28 +91,43 @@ def print_wallet_auth_line(win: TokenCostWindow, *, detail: bool = False) -> Non
         snap_parts.append(f"Extra Credits remaining ${win.prepaid_balance:.2f}")
     else:
         snap_parts.append("Extra Credits remaining (no billing sample)")
+    plan_lab = subscription_tier_label(getattr(win, "subscription_tier", None))
     if win.weekly_pct is not None:
-        snap_parts.append(f"weekly SuperGrok limit {win.weekly_pct:g}% used")
+        snap_parts.append(f"weekly {plan_lab} limit {win.weekly_pct:g}% used")
     else:
-        snap_parts.append("weekly SuperGrok limit (no sample)")
-    auth_lab = {
-        "supergrok_session": "auth SuperGrok session",
-        "api_key": "auth API key",
-        "none": "auth none",
-    }.get(win.auth_st.effective, f"auth {win.auth_st.effective}")
+        snap_parts.append(f"weekly {plan_lab} limit (no sample)")
+    if win.auth_st.effective == "supergrok_session":
+        auth_lab = (
+            "auth Heavy session"
+            if getattr(win, "subscription_tier", None) == "heavy"
+            else "auth SuperGrok session"
+        )
+    else:
+        auth_lab = {
+            "api_key": "auth API key",
+            "none": "auth none",
+        }.get(win.auth_st.effective, f"auth {win.auth_st.effective}")
     snap_parts.append(auth_lab)
     console.print(f"[bold]Wallet / auth[/bold]  {' · '.join(snap_parts)}")
     if detail and win.mix.source == "auth_mix" and win.est_total + 0.01 < win.list_total * 0.5:
         console.print(
             "[dim]list$ = activity · est$ ≈ Extra Credits burn "
-            "(0 while SuperGrok weekly pool has room)[/dim]"
+            f"(0 while {plan_lab} weekly pool has room)[/dim]"
         )
+    paths = {getattr(s, "path", "") for s in win.mix.slices}
+    has_heavy_unknown = "heavy_unknown" in paths
     has_sg_unknown = any(
         s.path == "supergrok_unknown"
         or (s.path == "unknown")
-        or "unknown" in (s.scale_src or "")
+        or ("unknown" in (s.scale_src or "") and s.path != "heavy_unknown")
         for s in win.mix.slices
     )
+    if has_heavy_unknown:
+        console.print(
+            "[dim]Heavy (?): weekly % unknown at turn time "
+            "(before billing log / gap) → est$ uses list$ scale, "
+            "not pool 0 or overage 1.9[/dim]"
+        )
     if has_sg_unknown:
         console.print(
             "[dim]SuperGrok (?): weekly % unknown at turn time "
@@ -131,8 +154,12 @@ def print_token_cost_summary(
     if abs(win.est_cash_total - win.est_total) > 0.005 or win.topoff_d > 0:
         tot_line += f"  est_cash$=${win.est_cash_total:.2f}"
     console.print(tot_line)
+    if getattr(win, "list_source", "rates") == "ticks":
+        rates_bit = "Build costUsdTicks ÷ 10^10  (= /usage Session Cost)"
+    else:
+        rates_bit = win.rates.short_label()
     console.print(
-        f"[dim]Rates[/dim]  {win.rates.short_label()}"
+        f"[dim]Rates[/dim]  {rates_bit}"
         + (
             f"  ·  forced scale {win.cash_scale_val:.4g} ({win.cash_scale_src})"
             if win.force_uniform is not None
@@ -207,11 +234,13 @@ def _plan_row(
 def week_list_series(
     records: list[Any],
     rates: TokenRates,
+    *,
+    prefer_ticks: bool = True,
 ) -> list[tuple[str, float]]:
     """ISO-week list$ totals for variance context (oldest → newest)."""
     from collections import defaultdict
 
-    from .pricing import api_estimate_usd
+    from .usage_tokens import turn_list_usd
 
     by_week: dict[str, float] = defaultdict(float)
     for r in records:
@@ -220,19 +249,7 @@ def week_list_series(
             continue
         iso = ts.isocalendar()
         key = f"{iso.year}-W{iso.week:02d}"
-        by_week[key] += float(
-            api_estimate_usd(
-                cached=int(getattr(r, "cached", 0) or 0),
-                uncached_in=max(
-                    0,
-                    int(getattr(r, "input", 0) or 0)
-                    - int(getattr(r, "cached", 0) or 0),
-                ),
-                output=int(getattr(r, "output", 0) or 0),
-                reasoning=int(getattr(r, "reasoning", 0) or 0),
-                rates=rates,
-            )
-        )
+        by_week[key] += float(turn_list_usd(r, rates, prefer_ticks=prefer_ticks))
     return sorted(by_week.items(), key=lambda kv: kv[0])
 
 
@@ -248,6 +265,8 @@ def print_plan_advisor(
     pack_usd: float = 100.0,
     week_list: list[tuple[str, float]] | None = None,
     list_by_key_path: dict[str, dict[str, float]] | None = None,
+    current_tier: str | None = None,
+    window_tiers: list[str] | None = None,
 ) -> None:
     """One table: base plans + offered promos; single ★ best for window usage."""
     from .pricing import (
@@ -341,11 +360,15 @@ def print_plan_advisor(
     )
     if tops > a.supergrok.sub_usd * 2:
         sg_note += " · tops dominate"
+    if current_tier == "supergrok":
+        sg_note += "  [green]· current plan[/green]"
     hv_note = (
         f"$/mo = sub ${a.heavy.sub_usd:g}"
         + (f" + pack tops ${tops_hv:.0f}" if tops_hv > 0.5 else " · tops rare")
         + f"  [dim]| pool ~${a.heavy.weekly_include_usd:g}/wk est.[/dim]"
     )
+    if current_tier == "heavy":
+        hv_note += "  [green]· current plan[/green]"
     _plan_row(
         t,
         option=f"SuperGrok ${a.supergrok.sub_usd:g}",
@@ -417,6 +440,7 @@ def print_plan_advisor(
         f"{' · --detail for breakdowns' if not detail else ''}[/dim]"
     )
     _print_auth_now_hint(auth_line)
+    _print_plan_current_notes(current_tier, window_tiers)
 
     if not detail:
         return
@@ -471,11 +495,14 @@ def print_plan_advisor(
     if mix_slices:
         paths = {getattr(s, "path", "") for s in mix_slices}
         has_api = "api_key" in paths
-        has_sg = any(p.startswith("supergrok") for p in paths if isinstance(p, str))
+        has_sg = any(
+            isinstance(p, str) and p.startswith(("supergrok", "heavy"))
+            for p in paths
+        )
         if has_api and has_sg:
             console.print(
-                "  [dim]Hybrid tip: window already mixes API + SuperGrok — "
-                "route heavy agent/Build to API key; SuperGrok for interactive.[/dim]"
+                "  [dim]Hybrid tip: window already mixes API + SuperGrok/Heavy — "
+                "route Heavy agent/Build to API key; session pool for interactive.[/dim]"
             )
 
     if week_list and len(week_list) >= 1:
@@ -497,7 +524,7 @@ def print_plan_advisor(
 
     face = a.api_list_monthly * ov
     console.print(
-        f"  [dim]Weekly pool $ is estimated (heavy Build often exhausts early). "
+        f"  [dim]Weekly pool $ is estimated (Heavy Build often exhausts SuperGrok early). "
         f"Overage lens all@×{ov:g}: ~${face:.0f}/mo face before packs/promo. "
         f"Spend can be burstier than the monthly average.[/dim]"
     )
@@ -511,10 +538,14 @@ def _print_per_app_regime(
     """Per-app list$ share by regime (not the same as 'subscription savings')."""
     path_labs = {
         "api_key": "API",
-        "supergrok_pool": "pool",
-        "supergrok_overage": "overage",
+        "supergrok_pool": "SG pool",
+        "supergrok_overage": "SG overage",
         "supergrok_unknown": "SG(?)",
         "supergrok_session": "SG",
+        "heavy_pool": "Heavy pool",
+        "heavy_overage": "Heavy overage",
+        "heavy_unknown": "Heavy(?)",
+        "heavy_session": "Heavy",
         "unknown": "?",
         "uniform": "uniform",
     }
@@ -528,7 +559,7 @@ def _print_per_app_regime(
     if not rows:
         return
     console.print(
-        "  [dim]Per-app regime (list$ share · SG(?) = weekly% unknown → list$ scale, "
+        "  [dim]Per-app regime (list$ share · SG(?)/Heavy(?) = weekly% unknown → list$ scale, "
         "not 'no pool benefit'):[/dim]"
     )
     for key, tot, paths in rows[:top_n]:
@@ -553,6 +584,8 @@ def plan_advisor_export(
     overage_scale: float = 1.9,
     week_list: list[tuple[str, float]] | None = None,
     list_by_key_path: dict[str, dict[str, float]] | None = None,
+    current_tier: str | None = None,
+    window_tiers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Structured plan-advisor view for --json (mirrors human table scoring)."""
     from .pricing import (
@@ -635,10 +668,13 @@ def plan_advisor_export(
             else []
         ),
         "list_by_key_path": list_by_key_path or {},
+        "current_tier": current_tier,
+        "window_tiers": list(window_tiers or []),
         "assumptions": {
             "table_tops_at_list_face_pack_ceil": True,
             "weekly_include_usd_estimated": True,
             "promo_temporary": True,
+            "current_tier_from_billing_subscriptionTier": True,
         },
     }
     if best.get("promo") and best.get("discount") is not None:
@@ -658,11 +694,45 @@ def _print_auth_now_hint(auth_line: str | None) -> None:
     console.print(f"[dim]{auth_line}[/dim]")
 
 
+def _print_plan_current_notes(
+    current_tier: str | None,
+    window_tiers: list[str] | None,
+) -> None:
+    """Extra planner footers: current plan vs what-if, mixed SuperGrok→Heavy windows."""
+    tiers = [t for t in (window_tiers or []) if t in ("heavy", "supergrok")]
+    if "heavy" in tiers and "supergrok" in tiers:
+        console.print(
+            "[dim]This window spans SuperGrok and Heavy (billing log "
+            "subscriptionTier). ★ is a blended pace if that mix continues — "
+            "not either plan's standalone bill.[/dim]"
+        )
+    if current_tier == "heavy":
+        console.print(
+            "[dim]Plan from billing log: SuperGrok Heavy. "
+            "The /usage panel may still say SuperGrok; session turns do not "
+            "store the plan.[/dim]"
+        )
+    elif current_tier == "supergrok":
+        console.print(
+            "[dim]Plan from billing log: SuperGrok. Heavy $300 is a what-if "
+            "if you upgrade. Session turns do not store the plan.[/dim]"
+        )
+
+
 def print_api_breakdown(tot: UsageBucket, rates: TokenRates, rates_label: str) -> None:
+    from .usage_tokens import completion_tokens, list_price_usd
+
+    out_n = completion_tokens(
+        output=tot.output,
+        reasoning=tot.reasoning,
+        total=tot.total,
+        input_tokens=tot.input,
+    )
     c_cached = tot.cached / 1e6 * rates.cached_input
     c_uncached = tot.uncached_in / 1e6 * rates.uncached_input
-    c_out = (tot.output + tot.reasoning) / 1e6 * rates.output
+    c_out = out_n / 1e6 * rates.output
     c_tot = c_cached + c_uncached + c_out
+    ticks_usd = list_price_usd(tot.ticks) if tot.ticks else 0.0
     console.print(f"\n[bold]PURE API ESTIMATE[/bold] — rates model: [cyan]{rates_label}[/cyan]")
     console.print(f"  {rates.short_label()}")
     console.print(
@@ -673,15 +743,17 @@ def print_api_breakdown(tot: UsageBucket, rates: TokenRates, rates_label: str) -
         f"  Uncached in   {tot.uncached_in:>14,} × ${rates.uncached_input:.2f}/1M "
         f"= ${c_uncached:,.2f}"
     )
-    out_n = tot.output + tot.reasoning
     console.print(
-        f"  Out+reasoning {out_n:>14,} × ${rates.output:.2f}/1M = ${c_out:,.2f}"
-        f"  (out {tot.output:,} + reason {tot.reasoning:,})"
+        f"  Completion    {out_n:>14,} × ${rates.output:.2f}/1M = ${c_out:,.2f}"
+        f"  (output {tot.output:,}; reasoning {tot.reasoning:,} usually already in output)"
     )
-    console.print(f"  Modeled API total                          ${c_tot:,.2f}")
+    console.print(f"  Modeled rate-table total                   ${c_tot:,.2f}")
+    if tot.ticks:
+        console.print(
+            f"  costUsdTicks ÷ 10^10  (/usage Session Cost) ${ticks_usd:,.4f}"
+        )
     console.print(
-        f"  Session log primary model id (info only): {tot.primary_model()}  "
-        f"— api$ uses --rates-model, not mixed per-turn models"
+        f"  Session log primary model id (info only): {tot.primary_model()}"
     )
 
 

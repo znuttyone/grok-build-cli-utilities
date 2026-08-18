@@ -96,6 +96,36 @@ def _write_turn(
         f.write(json.dumps(obj) + "\n")
 
 
+def test_list_price_usd_matches_xai_ticks():
+    from grok_build_cli_utilities.utils.usage_tokens import (
+        TICKS_PER_USD,
+        list_price_usd,
+        turn_list_usd,
+    )
+    from grok_build_cli_utilities.utils.usage_tokens import UsageRec
+    from datetime import datetime, timezone
+
+    assert TICKS_PER_USD == 10_000_000_000
+    # update-for-46 /usage Cost $1.5465
+    assert abs(list_price_usd(15_464_980_000) - 1.546498) < 1e-9
+    # ProfitGuard /usage Cost $77.3463 (mid-session snapshot)
+    assert abs(list_price_usd(773_463_000_000) - 77.3463) < 1e-9
+    rec = UsageRec(
+        prompt_id="t",
+        ts=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        project="P",
+        cwd="/P",
+        session_id="s",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+        ticks=15_464_980_000,
+    )
+    assert abs(turn_list_usd(rec) - 1.546498) < 1e-9
+    # -m / prefer_ticks=False reconstructs 4.6 cached $0.50
+    assert abs(turn_list_usd(rec, rates_for_model("grok-4.6"), prefer_ticks=False) - 0.50) < 1e-9
+
+
 def test_api_estimate_math():
     # 1M cached @ 0.20 + 1M uncached @ 1.00 + 0.5M out @ 2.00 = 0.2+1+1 = 2.2
     est = api_estimate_usd(
@@ -109,22 +139,44 @@ def test_api_estimate_math():
 
 
 def test_rates_for_model_fuzzy():
-    from grok_build_cli_utilities.utils.pricing import resolve_rates_model
+    from grok_build_cli_utilities.utils.pricing import (
+        DEFAULT_RATES_MODEL,
+        resolve_rates_model,
+    )
 
     r = rates_for_model("grok-4.5-build")
     # Matches console grok-4.5 Pricing (≤200k): input $2 / cached $0.30 / output $6
     assert r.cached_input == 0.30
     assert r.uncached_input == 2.00
     assert r.output == 6.00
+    r46 = rates_for_model("grok-4.6")
+    # docs.x.ai 2026-08-13: $2 / $0.50 / $6 (cached is the 4.5→4.6 list-rate delta)
+    assert r46.label == "grok-4.6"
+    assert r46.cached_input == 0.50
+    assert r46.uncached_input == 2.00
+    assert r46.output == 6.00
     r2 = rates_for_model("unknown-xyz")
-    assert r2.uncached_input == 2.00  # default is grok-4.5-class
+    assert r2.uncached_input == 2.00  # default is grok-4.6-class
+    assert r2.cached_input == 0.50
+    assert DEFAULT_RATES_MODEL == "grok-4.6"
     r3 = rates_for_model("grok-build-0.1")
     assert r3.cached_input == 0.20
     label, rates = resolve_rates_model("4.5")
     assert label == "grok-4.5"
     assert rates.output == 6.00
+    label46, rates46 = resolve_rates_model("4.6")
+    assert label46 == "grok-4.6"
+    assert rates46.cached_input == 0.50
     _label2, rates2 = resolve_rates_model("build")
     assert rates2.cached_input == 0.20
+    # grok-4 must not steal grok-4.6* (old substring match billed $3/$15)
+    for alias in ("grok-4.6", "4.6", "grok-4.6-build", "grok-4.6-fast"):
+        got = rates_for_model(alias)
+        assert got.label == "grok-4.6", alias
+        assert got.cached_input == 0.50, alias
+        assert got.output == 6.00, alias
+    assert rates_for_model("grok-4").output == 15.00
+    assert rates_for_model("grok-4-0709").output == 15.00
 
 
 def test_load_dedupe_and_filter(tmp_path: Path):
@@ -660,6 +712,43 @@ def test_historical_supergrok_without_weekly_uses_list_unknown():
     assert mix.slices and mix.slices[0].path == "supergrok_unknown"
 
 
+def test_auth_mix_labels_heavy_pool_from_tier_timeline():
+    from datetime import datetime, timezone
+
+    from grok_build_cli_utilities.utils.auth_status import AuthHistoryEvent
+    from grok_build_cli_utilities.utils.pricing import estimate_with_auth_mix
+    from grok_build_cli_utilities.utils.usage_tokens import UsageRec
+
+    rates = rates_for_model("grok-4.5")
+    r = UsageRec(
+        prompt_id="hv",
+        ts=datetime(2026, 8, 16, 15, 0, tzinfo=timezone.utc),
+        project="A",
+        cwd="/A",
+        session_id="s1",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    pts = [AuthHistoryEvent("2026-08-01T00:00:00+00:00", "cached_token", "sel")]
+    weekly_tl = [(datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc), 10.0)]
+    tier_tl = [
+        (datetime(2026, 8, 16, 11, 0, tzinfo=timezone.utc), "supergrok"),
+        (datetime(2026, 8, 16, 13, 12, tzinfo=timezone.utc), "heavy"),
+    ]
+    mix = estimate_with_auth_mix(
+        [r],
+        rates,
+        change_points=pts,
+        weekly_usage_pct=10.0,
+        weekly_timeline=weekly_tl,
+        tier_timeline=tier_tl,
+        fallback_auth="supergrok_session",
+    )
+    assert mix.slices and mix.slices[0].path == "heavy_pool"
+    assert mix.est_total == 0.0
+
+
 def test_plan_advisor_high_volume_prefers_heavy():
     # ~20d window, ~$358 list, scale 0.57 → est ~$204 (user sample intensity)
     a = plan_advisor(
@@ -803,6 +892,89 @@ def test_usage_cost_plan_advisor_json(tmp_path: Path):
     assert sum(s.get("list_pct") or 0 for s in data["auth_mix"]["slices"]) == 100
 
 
+def test_usage_cost_detects_heavy_from_billing_log(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    grok.mkdir()
+    sess = grok / "sessions" / "AppH" / "s1"
+    (grok / "auth.json").write_text(
+        json.dumps({"access_token": "x" * 40, "email": "u@example.com"}),
+        encoding="utf-8",
+    )
+    log_dir = grok / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "unified.jsonl").write_text(
+        json.dumps(
+            {
+                "ts": "2026-08-16T13:12:24Z",
+                "msg": "billing: fetched credits config",
+                "ctx": {
+                    "subscriptionTier": "SuperGrok Heavy",
+                    "config": {
+                        "creditUsagePercent": 16.0,
+                        "prepaidBalance": {"val": 15208},
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_turn(
+        sess / "updates.jsonl",
+        prompt_id="p1",
+        ts="2026-08-16T15:00:00Z",
+        input_t=1_000_000,
+        output_t=0,
+        cached=1_000_000,
+        reasoning=0,
+        ticks=10_000_000_000,
+        total=1_000_000,
+    )
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-16",
+            "--to",
+            "2026-08-16",
+            "-P",
+            "--json",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    data = _json_from_cli(r)
+    assert data["wallet"]["subscription_tier"] == "heavy"
+    assert data["wallet"]["subscription_tier_label"] == "Heavy"
+    assert data["plan_advisor"]["current_tier"] == "heavy"
+    paths = {s["path"] for s in data["auth_mix"]["slices"]}
+    assert "heavy_pool" in paths
+
+    human = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-16",
+            "--to",
+            "2026-08-16",
+            "-P",
+        ],
+    )
+    assert human.exit_code == 0, human.output
+    out = human.output
+    assert "Heavy pool" in out or "auth Heavy session" in out
+    assert "current plan" in out
+    assert "what-if" in out
+    assert "Plan from billing log: SuperGrok Heavy" in out
+
+
 def test_usage_cost_from_before_data_warns(tmp_path: Path):
     """--from earlier than any session turn → warning with actual earliest date."""
     grok = tmp_path / ".grok"
@@ -912,22 +1084,56 @@ def test_usage_cost_rates_model_switch(tmp_path: Path):
         output_t=0,
         cached=1_000_000,
         reasoning=0,
-        ticks=1,
+        ticks=0,
         total=1_000_000,
     )
-    r45 = runner.invoke(
-        app,
-        ["-g", str(grok), "usage", "cost", "--from", "2026-08-01", "--to", "2026-08-04",
-         "-m", "grok-4.5", "--json"],
-    )
-    r_build = runner.invoke(
-        app,
-        ["-g", str(grok), "usage", "cost", "--from", "2026-08-01", "--to", "2026-08-04",
-         "-m", "grok-build-0.1", "--json"],
-    )
-    assert r45.exit_code == 0 and r_build.exit_code == 0
+    base = ["-g", str(grok), "usage", "cost", "--from", "2026-08-01", "--to", "2026-08-04"]
+    r45 = runner.invoke(app, [*base, "-m", "grok-4.5", "--json"])
+    r46 = runner.invoke(app, [*base, "-m", "grok-4.6", "--json"])
+    r_default = runner.invoke(app, [*base, "--json"])
+    r_build = runner.invoke(app, [*base, "-m", "grok-build-0.1", "--json"])
+    assert r45.exit_code == 0 and r46.exit_code == 0
+    assert r_default.exit_code == 0 and r_build.exit_code == 0
     d45 = _json_from_cli(r45)
+    d46 = _json_from_cli(r46)
+    ddef = _json_from_cli(r_default)
     db = _json_from_cli(r_build)
-    # 1M cached: 4.5 → $0.30; build → $0.20
+    # 1M cached, no ticks: 4.5 → $0.30; 4.6 / default fallback → $0.50; build → $0.20
     assert abs(d45["totals"]["list_usd"] - 0.30) < 1e-6
+    assert abs(d46["totals"]["list_usd"] - 0.50) < 1e-6
+    assert d46["rates_model"] == "grok-4.6"
+    assert ddef["list_source"] == "rates"
+    assert abs(ddef["totals"]["list_usd"] - 0.50) < 1e-6
     assert abs(db["totals"]["list_usd"] - 0.20) < 1e-6
+
+
+def test_usage_cost_default_uses_ticks(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    sess = grok / "sessions" / "AppT" / "s1"
+    _write_turn(
+        sess / "updates.jsonl",
+        prompt_id="p1",
+        ts="2026-08-13T12:00:00Z",
+        input_t=1_000_000,
+        output_t=0,
+        cached=1_000_000,
+        reasoning=0,
+        ticks=15_464_980_000,  # /usage $1.546498
+        total=1_000_000,
+    )
+    r = runner.invoke(
+        app,
+        ["-g", str(grok), "usage", "cost", "--from", "2026-08-13", "--json"],
+    )
+    assert r.exit_code == 0, r.output
+    data = _json_from_cli(r)
+    assert data["list_source"] == "ticks"
+    assert abs(data["totals"]["list_usd"] - 1.5465) < 1e-4
+    # -m still reconstructs and ignores ticks
+    r_m = runner.invoke(
+        app,
+        ["-g", str(grok), "usage", "cost", "--from", "2026-08-13", "-m", "grok-4.6", "--json"],
+    )
+    d_m = _json_from_cli(r_m)
+    assert d_m["list_source"] == "rates"
+    assert abs(d_m["totals"]["list_usd"] - 0.50) < 1e-6

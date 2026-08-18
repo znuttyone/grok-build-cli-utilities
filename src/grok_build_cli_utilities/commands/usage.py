@@ -21,7 +21,6 @@ from ..utils.common import (
 )
 from ..utils.pricing import (
     DEFAULT_CASH_SCALE,
-    DEFAULT_RATES_MODEL,
     effective_rates,
     list_rate_profiles,
     load_plan_advisor_config,
@@ -192,12 +191,13 @@ def report(
             "to leave the legacy session-summary path"
         ),
     ),
-    rates_model: str = typer.Option(
-        DEFAULT_RATES_MODEL,
+    rates_model: str | None = typer.Option(
+        None,
         "--rates-model",
         "-m",
         help=(
-            f"List-rate profile for list$ (default: {DEFAULT_RATES_MODEL}). "
+            "Force a reconstructed list-rate table (ignores costUsdTicks). "
+            f"Omit to use Build /usage Cost (ticks÷1e10). "
             f"Choices: {', '.join(list_rate_profiles())}"
         ),
     ),
@@ -227,7 +227,7 @@ def report(
         warn(
             "--tokens is ignored with --by app (token path / list$/est$ is already on). "
             "Use --tokens when grouping by project, model, or day, e.g.\n"
-            "  grok-utils usage report --by day --tokens --from 2026-08-01 -m grok-4.5"
+            "  grok-utils usage report --by day --tokens --from 2026-08-01"
         )
     use_tokens = bool(tokens) or by == "app"
 
@@ -259,7 +259,7 @@ def report(
 
             top_rows = []
             for b in win.buckets[:top]:
-                list_b = b.api_est(win.rates)
+                list_b = win.list_for_key(b.key)
                 row = b.to_dict(win.rates)
                 row["list_usd"] = round(list_b, 4)
                 row["api_est_usd"] = round(list_b, 4)
@@ -280,6 +280,7 @@ def report(
                             result_latest.isoformat() if result_latest else None
                         ),
                         "rates_model": win.rates_label,
+                        "list_source": win.list_source,
                         "rates": win.rates.as_dict(),
                         "cash_scale": win.cash_scale_val,
                         "cash_scale_source": win.cash_scale_src,
@@ -298,7 +299,7 @@ def report(
                         },
                         "buckets": top_rows,
                         "caveats": [
-                            "list$_is_pure_api_list_rates",
+                            "list$_is_costUsdTicks_div_1e10_when_present_else_rates",
                             "est$_uses_auth_timeline_mix_unless_uniform_override",
                             "share_bars_use_list$",
                             "est_cash$_applies_topoff_discount_to_est$",
@@ -324,10 +325,10 @@ def report(
             title,
             ["Key", "Prm", "Tokens", "Cache%", "list$", "est$", "Share(list$)", "Share(tok)"],
         )
-        max_list = max((b.api_est(win.rates) for b in win.buckets[:top]), default=1.0) or 1.0
+        max_list = max((win.list_for_key(b.key) for b in win.buckets[:top]), default=1.0) or 1.0
         max_tok = max((b.total for b in win.buckets[:top]), default=1) or 1
         for b in win.buckets[:top]:
-            list_b = b.api_est(win.rates)
+            list_b = win.list_for_key(b.key)
             est_b = win.est_for_key(b.key)
             key = b.key[:44] + ("…" if len(b.key) > 44 else "")
             t.add_row(
@@ -493,13 +494,14 @@ def cost_report(
         metavar="USD",
         help="Requires amount with --invoice-usd: fixed fee amortized across buckets (e.g. 30)",
     ),
-    rates_model: str = typer.Option(
-        DEFAULT_RATES_MODEL,
+    rates_model: str | None = typer.Option(
+        None,
         "--rates-model",
         "-m",
         metavar="MODEL",
         help=(
-            f"List-rate profile for list$ (default: {DEFAULT_RATES_MODEL}). "
+            "Force a reconstructed list-rate table (ignores costUsdTicks). "
+            f"Omit to use Build /usage Cost (ticks÷1e10). "
             f"Choices: {', '.join(list_rate_profiles())}"
         ),
     ),
@@ -543,7 +545,7 @@ def cost_report(
     list_price: bool = typer.Option(
         False,
         "--list-price",
-        help="Flag (no value): show costUsdTicks/1e9 (usually overstates cash)",
+        help="Flag (no value): show costUsdTicks÷1e10 (same $ as /usage Session Cost)",
     ),
     api_estimate: bool = typer.Option(
         False,
@@ -584,19 +586,20 @@ def cost_report(
     Options that take a value need the number/date on the same flag
     (e.g. --invoice-usd 180, not bare --invoice-usd). Use: grok-utils usage cost --help
 
-    list$ = tokens × published rates (--rates-model). Primary activity meter.
+    list$ = Build costUsdTicks ÷ 1e10 (same $ as /usage Session Cost).
+            Pass -m MODEL to reconstruct from a published rate table instead.
     est$  = list$ × path/regime scale (API≈1.0; SuperGrok pool≈0; overage≈1.9)
             via auth timeline mix unless --cash-scale / prepaid-fit forces one scale.
     Footer: Wallet / auth snapshot (Extra Credits · weekly % · path). FAQ: usage info
 
       # Closed window
-      grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.5
+      grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app
 
       # From a date through latest session data (omit --to)
-      grok-utils usage cost --from 2026-08-01 --by app -m grok-4.5
+      grok-utils usage cost --from 2026-08-01 --by app
 
       # Plan advisor: API vs SuperGrok vs Heavy for the window
-      grok-utils usage cost --from 2026-07-18 --by app -m grok-4.5 --plan-advisor
+      grok-utils usage cost --from 2026-07-18 --by app --plan-advisor
 
       # One-shot wallet fit for a window (both amounts required)
       grok-utils usage cost ... --prepaid-usd 70 --credits-remaining 21.40
@@ -718,7 +721,7 @@ def cost_report(
 
         top_rows = []
         for b in buckets[:top]:
-            list_b = b.api_est(rates)
+            list_b = win.list_for_key(b.key)
             row = b.to_dict(rates)
             row["list_usd"] = round(list_b, 4)
             row["est_usd"] = round(win.est_for_key(b.key), 4)
@@ -742,7 +745,7 @@ def cost_report(
                 row["list_price_usd"] = round(list_price_usd(b.ticks), 4)
             top_rows.append(row)
 
-        weeks = week_list_series(records, rates)
+        weeks = week_list_series(records, rates, prefer_ticks=win.prefer_ticks)
         pack_usd = resolve_topoff_pack_usd(usage_cfg)
         ov_scale = cfg_overage_scale(usage_cfg)
         plan_export = None
@@ -755,6 +758,8 @@ def cost_report(
                 overage_scale=ov_scale,
                 week_list=weeks,
                 list_by_key_path=dict(mix.list_by_key_path),
+                current_tier=win.subscription_tier,
+                window_tiers=list(win.window_tiers),
             )
 
         payload = {
@@ -767,6 +772,7 @@ def cost_report(
             "result_from": result_earliest.isoformat() if result_earliest else None,
             "result_to": result_latest.isoformat() if result_latest else None,
             "rates_model": rates_label,
+            "list_source": win.list_source,
             "rates": rates.as_dict(),
             "cash_scale": cash_scale_val,
             "cash_scale_source": cash_scale_src,
@@ -782,9 +788,20 @@ def cost_report(
             "wallet": {
                 "extra_credits_remaining_usd": prepaid_balance,
                 "weekly_supergrok_limit_pct_used": weekly_pct,
+                "weekly_limit_pct_used": weekly_pct,
+                "subscription_tier": win.subscription_tier,
+                "subscription_tier_raw": win.subscription_tier_raw,
+                "subscription_tier_label": (
+                    "Heavy"
+                    if win.subscription_tier == "heavy"
+                    else (
+                        "SuperGrok" if win.subscription_tier == "supergrok" else None
+                    )
+                ),
                 "auth_path": auth_st.effective,
             },
             "weekly_usage_pct": weekly_pct,
+            "subscription_tier": win.subscription_tier,
             "prepaid_balance_usd": prepaid_balance,
             "topoff_discount_scenarios": topoff_scenarios,
             "auth_mix": mix.as_dict(),
@@ -812,12 +829,13 @@ def cost_report(
                 advisor.as_dict() if advisor else None
             ),
             "caveats": [
-                "list$_is_pure_api_list_rates",
+                "list$_is_costUsdTicks_div_1e10_when_present_else_rates",
                 "est$_uses_auth_timeline_mix_unless_uniform_override",
                 "weekly_pct_unknown_uses_list_scale_not_pool_or_overage",
+                "subscription_tier_from_billing_log_not_session_turns",
                 "plan_advisor_pure_api_uses_api_scale_not_table_scale",
                 "topoff_discount_is_card_promo_not_list$",
-                "long_context_tier_not_applied",
+                "pass_-m_to_force_reconstructed_rate_table",
             ],
         }
         print(json.dumps(payload, indent=2))
@@ -849,10 +867,10 @@ def cost_report(
         f"Estimated Cost by {by} (list$ primary · est$=path scale){period}",
         headers,
     )
-    share_vals = [b.api_est(rates) for b in buckets[:top]]
+    share_vals = [win.list_for_key(b.key) for b in buckets[:top]]
     max_share = max(share_vals, default=1.0) or 1.0
     for b in buckets[:top]:
-        list_b = b.api_est(rates)
+        list_b = win.list_for_key(b.key)
         est_b = win.est_for_key(b.key)
         key = b.key[:40] + ("…" if len(b.key) > 40 else "")
         cells: list[str] = [
@@ -880,8 +898,8 @@ def cost_report(
         )
     if list_price:
         console.print(
-            f"  Ticks/1e9: ${list_price_usd(tot.ticks):,.2f}  "
-            f"[dim](usually overstates cash)[/dim]"
+            f"  costUsdTicks÷1e10: ${list_price_usd(tot.ticks):,.4f}  "
+            f"[dim](same unit as /usage Session Cost)[/dim]"
         )
 
     if api_estimate:
@@ -890,7 +908,9 @@ def cost_report(
     if advisor is not None:
         print_plan_advisor(
             advisor,
-            auth_line=format_auth_plan_advisor_line(auth_st),
+            auth_line=format_auth_plan_advisor_line(
+                auth_st, subscription_tier=win.subscription_tier
+            ),
             overage_scale=cfg_overage_scale(usage_cfg),
             topoff_scenarios=topoff_scenarios,
             active_topoff_discount=topoff_d,
@@ -899,6 +919,8 @@ def cost_report(
             pack_usd=resolve_topoff_pack_usd(usage_cfg),
             week_list=week_list_series(records, rates),
             list_by_key_path=dict(mix.list_by_key_path),
+            current_tier=win.subscription_tier,
+            window_tiers=list(win.window_tiers),
         )
 
     if detail:

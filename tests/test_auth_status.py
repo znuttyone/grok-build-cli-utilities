@@ -13,10 +13,13 @@ from grok_build_cli_utilities.utils.auth_status import (
     AuthHistoryEvent,
     auth_history_change_points,
     detect_auth,
+    format_auth_plan_advisor_line,
     latest_prepaid_balance_usd,
     latest_weekly_usage_percent,
     load_auth_history,
     load_billing_snapshot,
+    normalize_subscription_tier,
+    subscription_tier_at,
 )
 
 runner = CliRunner()
@@ -100,9 +103,90 @@ def test_latest_prepaid_and_weekly_from_billing_log(tmp_path: Path):
     assert snap.prepaid_usd == 21.40
     assert snap.weekly_pct == 17.0
     assert snap.weekly_timeline and snap.weekly_timeline[-1][1] == 17.0
+    assert snap.subscription_tier is None
     # wrappers still work (same one-pass implementation)
     assert latest_prepaid_balance_usd(grok) == 21.40
     assert latest_weekly_usage_percent(grok) == 17.0
+
+
+def test_billing_snapshot_reads_subscription_tier(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    log_dir = grok / "logs"
+    log_dir.mkdir(parents=True)
+    lines = [
+        {
+            "ts": "2026-08-16T12:00:00Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok",
+                "config": {
+                    "creditUsagePercent": 8.0,
+                    "prepaidBalance": {"val": 15208},
+                },
+            },
+        },
+        {
+            "ts": "2026-08-16T13:12:24Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok Heavy",
+                "config": {
+                    "creditUsagePercent": 10.0,
+                    "prepaidBalance": {"val": 15208},
+                },
+            },
+        },
+    ]
+    (log_dir / "unified.jsonl").write_text(
+        "\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8"
+    )
+    snap = load_billing_snapshot(grok)
+    assert snap.subscription_tier == "heavy"
+    assert snap.subscription_tier_raw == "SuperGrok Heavy"
+    assert snap.weekly_pct == 10.0
+    assert [t for _, t in snap.tier_timeline] == ["supergrok", "heavy"]
+    from datetime import datetime, timezone
+
+    assert (
+        subscription_tier_at(
+            datetime(2026, 8, 16, 12, 30, tzinfo=timezone.utc), snap.tier_timeline
+        )
+        == "supergrok"
+    )
+    assert (
+        subscription_tier_at(
+            datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc), snap.tier_timeline
+        )
+        == "heavy"
+    )
+
+
+def test_normalize_subscription_tier():
+    assert normalize_subscription_tier("SuperGrok Heavy") == "heavy"
+    assert normalize_subscription_tier("SuperGrok") == "supergrok"
+    assert normalize_subscription_tier(None) is None
+    assert normalize_subscription_tier("nope") is None
+
+
+def test_plan_advisor_line_marks_heavy_current():
+    from grok_build_cli_utilities.utils.auth_status import AuthStatus
+
+    st = AuthStatus(
+        effective="supergrok_session",
+        label="SuperGrok session (login / cached_token)",
+        session_present=True,
+        session_path="/tmp/auth.json",
+        session_email="u@example.com",
+        api_key_env_present=False,
+        preferred_method=None,
+    )
+    heavy = format_auth_plan_advisor_line(st, subscription_tier="heavy")
+    assert heavy is not None
+    assert "Heavy $300 is your current plan" in heavy
+    assert "what-if" in heavy
+    sg = format_auth_plan_advisor_line(st, subscription_tier="supergrok")
+    assert sg is not None
+    assert "Heavy rows are what-if" in sg
 
 
 def test_auth_status_cli_shows_extra_credits(tmp_path: Path):
@@ -130,6 +214,7 @@ def test_auth_status_cli_shows_extra_credits(tmp_path: Path):
     assert data["extra_credits_usd"] == 21.4
     assert data["weekly_usage_pct"] == 6.5
     assert data["auth"]["effective"] == "supergrok_session"
+    assert data.get("subscription_tier") is None
 
 
 def test_load_auth_history_from_log(tmp_path: Path):
