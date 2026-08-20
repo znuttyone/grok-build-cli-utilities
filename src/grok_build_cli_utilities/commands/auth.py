@@ -64,12 +64,8 @@ def auth_status(
     console.print(f"  Session credentials present: {'yes' if status.session_present else 'no'}")
     if status.session_email:
         console.print(f"  Signed in as: {status.session_email}")
-    console.print(
-        f"  XAI_API_KEY env: {'set' if status.api_key_env_present else 'not set'}"
-    )
-    console.print(
-        f"  preferred_method: {status.preferred_method or '(not set in config.toml)'}"
-    )
+    console.print(f"  XAI_API_KEY env: {'set' if status.api_key_env_present else 'not set'}")
+    console.print(f"  preferred_method: {status.preferred_method or '(not set in config.toml)'}")
     console.print(f"\n  Spend lens: {status.spend_hint}")
     for n in status.notes:
         console.print(f"  [dim]• {n}[/dim]")
@@ -100,7 +96,7 @@ def auth_status(
     console.print(
         "Override to force API when logged in:\n"
         "  # ~/.grok/config.toml\n"
-        '  [auth]\n'
+        "  [auth]\n"
         '  preferred_method = "api_key"\n'
         "  # or remove ~/.grok/auth.json (recreated if you grok login again)",
         style="dim",

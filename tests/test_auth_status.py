@@ -148,15 +148,11 @@ def test_billing_snapshot_reads_subscription_tier(tmp_path: Path):
     from datetime import datetime, timezone
 
     assert (
-        subscription_tier_at(
-            datetime(2026, 8, 16, 12, 30, tzinfo=timezone.utc), snap.tier_timeline
-        )
+        subscription_tier_at(datetime(2026, 8, 16, 12, 30, tzinfo=timezone.utc), snap.tier_timeline)
         == "supergrok"
     )
     assert (
-        subscription_tier_at(
-            datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc), snap.tier_timeline
-        )
+        subscription_tier_at(datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc), snap.tier_timeline)
         == "heavy"
     )
 

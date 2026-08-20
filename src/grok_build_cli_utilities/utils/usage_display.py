@@ -174,9 +174,7 @@ def print_token_cost_summary(
     )
     print_wallet_auth_line(win, detail=detail)
     if win.topoff_d > 0:
-        console.print(
-            f"[dim]Top-off promo[/dim]  {win.topoff_d:g} ({win.topoff_src}) → est_cash$"
-        )
+        console.print(f"[dim]Top-off promo[/dim]  {win.topoff_d:g} ({win.topoff_src}) → est_cash$")
     if show_faq_hint:
         if detail:
             console.print(
@@ -300,12 +298,8 @@ def print_plan_advisor(
     # Candidates: (key, label, monthly, is_promo, discount)
     cands: list[tuple[str, str, float, bool, float | None]] = []
     cands.append(("api", "Pure API", api_mo, False, None))
-    cands.append(
-        ("sg_full", f"SuperGrok ${a.supergrok.sub_usd:g}", sg_full_mo, False, None)
-    )
-    cands.append(
-        ("hv_full", f"Heavy ${a.heavy.sub_usd:g}", hv_full_mo, False, None)
-    )
+    cands.append(("sg_full", f"SuperGrok ${a.supergrok.sub_usd:g}", sg_full_mo, False, None))
+    cands.append(("hv_full", f"Heavy ${a.heavy.sub_usd:g}", hv_full_mo, False, None))
     for d in scenarios:
         sg_c = a.supergrok.sub_usd + tops * (1.0 - d)
         pct = int(round(d * 100))
@@ -384,11 +378,11 @@ def print_plan_advisor(
         highlight=win_key == "hv_full",
     )
 
-    for key, lab, monthly, is_promo, d in cands:
-        if not is_promo or d is None:
+    for key, lab, monthly, is_promo, disc in cands:
+        if not is_promo or disc is None:
             continue
-        pin = abs(d - active_d) < 1e-9 and active_d > 0
-        note = f"$/mo = sub + pack tops×{1.0 - d:g}"
+        pin = abs(disc - active_d) < 1e-9 and active_d > 0
+        note = f"$/mo = sub + pack tops×{1.0 - disc:g}"
         if pin:
             note += "  ← your --topoff-discount"
         if key.startswith("hv_"):
@@ -416,8 +410,7 @@ def print_plan_advisor(
             + (f"  (~${save_api:.0f}/mo under Pure API)" if save_api > 0.5 else "")
         )
         console.print(
-            f"  [dim]If promo ends: {full_label} ~${full_mo:.0f}/mo "
-            f"(not the promo row).[/dim]"
+            f"  [dim]If promo ends: {full_label} ~${full_mo:.0f}/mo (not the promo row).[/dim]"
         )
     elif win_key == "api":
         console.print(
@@ -472,9 +465,7 @@ def print_plan_advisor(
     if tops > 0.5 and ov > 1.01:
         tops_hi = ceil_to_pack_usd(tops_raw * ov, pack)
         sg_full_hi = a.supergrok.sub_usd + tops_hi
-        best_promo_hi = min(
-            (a.supergrok.sub_usd + tops_hi * (1.0 - d), d) for d in scenarios
-        )
+        best_promo_hi = min((a.supergrok.sub_usd + tops_hi * (1.0 - d), d) for d in scenarios)
         hi_mo, hi_d = best_promo_hi
         hi_pct = int(round(hi_d * 100))
         console.print(
@@ -495,10 +486,7 @@ def print_plan_advisor(
     if mix_slices:
         paths = {getattr(s, "path", "") for s in mix_slices}
         has_api = "api_key" in paths
-        has_sg = any(
-            isinstance(p, str) and p.startswith(("supergrok", "heavy"))
-            for p in paths
-        )
+        has_sg = any(isinstance(p, str) and p.startswith(("supergrok", "heavy")) for p in paths)
         if has_api and has_sg:
             console.print(
                 "  [dim]Hybrid tip: window already mixes API + SuperGrok/Heavy — "
@@ -509,11 +497,7 @@ def print_plan_advisor(
         bits = [f"{wk} ${usd:.0f}" for wk, usd in week_list]
         vals = [usd for _, usd in week_list]
         lo, hi = min(vals), max(vals)
-        spread = (
-            f"  range ${lo:.0f}–${hi:.0f}/wk"
-            if len(vals) > 1 and hi - lo > 1
-            else ""
-        )
+        spread = f"  range ${lo:.0f}–${hi:.0f}/wk" if len(vals) > 1 and hi - lo > 1 else ""
         console.print(
             f"  [dim]Week list$ (pace check): {' · '.join(bits)}{spread}. "
             f"Point estimate assumes this pace holds.[/dim]"
@@ -566,11 +550,7 @@ def _print_per_app_regime(
         names = list(paths.keys())
         weights = [paths[n] for n in names]
         pcts = _reconcile_pcts(weights)
-        bits = [
-            f"{path_labs.get(n, n)} {p}%"
-            for n, p in zip(names, pcts, strict=True)
-            if p > 0
-        ]
+        bits = [f"{path_labs.get(n, n)} {p}%" for n, p in zip(names, pcts, strict=True) if p > 0]
         short = key if len(key) <= 36 else key[:35] + "…"
         console.print(f"    [dim]{short}: list${tot:.0f}  {' · '.join(bits)}[/dim]")
 
@@ -613,12 +593,19 @@ def plan_advisor_export(
         if d > 0
     ]
     candidates: list[dict[str, Any]] = [
-        {"id": "api", "label": "Pure API", "monthly": round(api_mo, 4), "promo": False},
+        {
+            "id": "api",
+            "label": "Pure API",
+            "monthly": round(api_mo, 4),
+            "promo": False,
+            "active": False,
+        },
         {
             "id": "sg_full",
             "label": f"SuperGrok ${a.supergrok.sub_usd:g}",
             "monthly": round(sg_full_mo, 4),
             "promo": False,
+            "active": False,
             "pack_tops_face": tops,
             "tops_face_raw": tops_raw,
         },
@@ -627,10 +614,14 @@ def plan_advisor_export(
             "label": f"Heavy ${a.heavy.sub_usd:g}",
             "monthly": round(hv_full_mo, 4),
             "promo": False,
+            "active": False,
+            "pack_tops_face": tops_hv,
+            "tops_face_raw": tops_hv_raw,
         },
     ]
     for d in scenarios:
         pct = int(round(d * 100))
+        pin = abs(d - active_d) < 1e-9 and active_d > 0
         candidates.append(
             {
                 "id": f"sg_{pct}",
@@ -638,12 +629,22 @@ def plan_advisor_export(
                 "monthly": round(a.supergrok.sub_usd + tops * (1.0 - d), 4),
                 "promo": True,
                 "discount": d,
+                "active": pin,
             }
         )
+        if tops_hv > 0.5:
+            candidates.append(
+                {
+                    "id": f"hv_{pct}",
+                    "label": f"Heavy @ −{pct}% tops",
+                    "monthly": round(a.heavy.sub_usd + tops_hv * (1.0 - d), 4),
+                    "promo": True,
+                    "discount": d,
+                    "active": pin,
+                }
+            )
     best = min(candidates, key=lambda c: c["monthly"])
-    full_best = min(
-        (c for c in candidates if not c.get("promo")), key=lambda c: c["monthly"]
-    )
+    full_best = min((c for c in candidates if not c.get("promo")), key=lambda c: c["monthly"])
     out: dict[str, Any] = {
         "window_days": a.window_days,
         "project_days": a.project_days,
@@ -663,9 +664,7 @@ def plan_advisor_export(
             "measured Extra Credit face/list$ on overage windows)"
         ),
         "week_list_usd": (
-            [{"week": w, "list_usd": round(u, 4)} for w, u in week_list]
-            if week_list
-            else []
+            [{"week": w, "list_usd": round(u, 4)} for w, u in week_list] if week_list else []
         ),
         "list_by_key_path": list_by_key_path or {},
         "current_tier": current_tier,
@@ -736,8 +735,7 @@ def print_api_breakdown(tot: UsageBucket, rates: TokenRates, rates_label: str) -
     console.print(f"\n[bold]PURE API ESTIMATE[/bold] — rates model: [cyan]{rates_label}[/cyan]")
     console.print(f"  {rates.short_label()}")
     console.print(
-        f"  Cached input  {tot.cached:>14,} × ${rates.cached_input:.2f}/1M "
-        f"= ${c_cached:,.2f}"
+        f"  Cached input  {tot.cached:>14,} × ${rates.cached_input:.2f}/1M = ${c_cached:,.2f}"
     )
     console.print(
         f"  Uncached in   {tot.uncached_in:>14,} × ${rates.uncached_input:.2f}/1M "
@@ -749,12 +747,8 @@ def print_api_breakdown(tot: UsageBucket, rates: TokenRates, rates_label: str) -
     )
     console.print(f"  Modeled rate-table total                   ${c_tot:,.2f}")
     if tot.ticks:
-        console.print(
-            f"  costUsdTicks ÷ 10^10  (/usage Session Cost) ${ticks_usd:,.4f}"
-        )
-    console.print(
-        f"  Session log primary model id (info only): {tot.primary_model()}"
-    )
+        console.print(f"  costUsdTicks ÷ 10^10  (/usage Session Cost) ${ticks_usd:,.4f}")
+    console.print(f"  Session log primary model id (info only): {tot.primary_model()}")
 
 
 # re-export for plan-advisor auth line

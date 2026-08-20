@@ -273,12 +273,8 @@ def report(
                         "by": group,
                         "from": d_from.isoformat() if d_from else None,
                         "to": d_to.isoformat() if d_to else None,
-                        "result_from": (
-                            result_earliest.isoformat() if result_earliest else None
-                        ),
-                        "result_to": (
-                            result_latest.isoformat() if result_latest else None
-                        ),
+                        "result_from": (result_earliest.isoformat() if result_earliest else None),
+                        "result_to": (result_latest.isoformat() if result_latest else None),
                         "rates_model": win.rates_label,
                         "list_source": win.list_source,
                         "rates": win.rates.as_dict(),
@@ -344,6 +340,7 @@ def report(
         console.print(t)
         print_token_cost_summary(win, cost_mode=False, show_faq_hint=False)
         from ..utils.usage_tokens import aggregate as _agg
+
         day_buckets = _agg(records, "day")
         vals = [b.total for b in day_buckets[-14:]]
         if vals:
@@ -367,7 +364,6 @@ def report(
         top=top,
         json_out=json_out,
     )
-
 
 
 @app.command("top-projects")
@@ -577,9 +573,7 @@ def cost_report(
         metavar="NAME",
         help="Requires substring: filter by app/project (repeatable, e.g. --app VCI)",
     ),
-    json_out: bool = typer.Option(
-        False, "--json", help="Flag (no value): machine-readable JSON"
-    ),
+    json_out: bool = typer.Option(False, "--json", help="Flag (no value): machine-readable JSON"),
 ) -> None:
     """Token-accurate cost: list$ (API list rates) + est$ (path/regime spend lens).
 
@@ -733,9 +727,7 @@ def cost_report(
                 from ..utils.usage_display import _reconcile_pcts
 
                 pcts = _reconcile_pcts(weights)
-                row["regime_list_pct"] = {
-                    n: p for n, p in zip(names, pcts, strict=True) if p > 0
-                }
+                row["regime_list_pct"] = {n: p for n, p in zip(names, pcts, strict=True) if p > 0}
                 row["regime_list_usd"] = {n: round(path_map[n], 4) for n in names}
             if show_invoice:
                 var = b.ticks * inv_scale
@@ -794,9 +786,7 @@ def cost_report(
                 "subscription_tier_label": (
                     "Heavy"
                     if win.subscription_tier == "heavy"
-                    else (
-                        "SuperGrok" if win.subscription_tier == "supergrok" else None
-                    )
+                    else ("SuperGrok" if win.subscription_tier == "supergrok" else None)
                 ),
                 "auth_path": auth_st.effective,
             },
@@ -825,9 +815,9 @@ def cost_report(
                 else None
             ),
             "buckets": top_rows,
-            "plan_advisor": plan_export if plan_export else (
-                advisor.as_dict() if advisor else None
-            ),
+            "plan_advisor": plan_export
+            if plan_export
+            else (advisor.as_dict() if advisor else None),
             "caveats": [
                 "list$_is_costUsdTicks_div_1e10_when_present_else_rates",
                 "est$_uses_auth_timeline_mix_unless_uniform_override",
@@ -848,11 +838,7 @@ def cost_report(
             if result_earliest
             else (d_from.isoformat() if d_from else "…")
         )
-        right = (
-            result_latest.isoformat()
-            if result_latest
-            else (d_to.isoformat() if d_to else "…")
-        )
+        right = result_latest.isoformat() if result_latest else (d_to.isoformat() if d_to else "…")
         period = f" · {left} → {right}"
         if d_from is not None and result_earliest is not None and d_from < result_earliest:
             period += f"  (requested --from {d_from.isoformat()})"
@@ -939,4 +925,3 @@ def cost_report(
 
 def _invoice_total(invoice_usd: float | None, fixed_usd: float) -> float:
     return float(invoice_usd or 0) + float(fixed_usd or 0)
-

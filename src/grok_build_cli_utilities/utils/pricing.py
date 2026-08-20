@@ -276,12 +276,8 @@ def resolve_cash_scale(
             pass
 
     scale_api = _cfg_float(cfg, "cash_scale_api", DEFAULT_CASH_SCALE_API)
-    scale_pool = _cfg_float(
-        cfg, "cash_scale_supergrok_pool", DEFAULT_CASH_SCALE_SUPERGROK_POOL
-    )
-    scale_ov = _cfg_float(
-        cfg, "cash_scale_supergrok_overage", DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE
-    )
+    scale_pool = _cfg_float(cfg, "cash_scale_supergrok_pool", DEFAULT_CASH_SCALE_SUPERGROK_POOL)
+    scale_ov = _cfg_float(cfg, "cash_scale_supergrok_overage", DEFAULT_CASH_SCALE_SUPERGROK_OVERAGE)
 
     regime = (regime_override or str(cfg.get("supergrok_regime") or "auto")).lower().strip()
     auth = (auth_effective or "none").lower().strip()

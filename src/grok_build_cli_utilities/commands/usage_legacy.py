@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 import typer
 
@@ -37,7 +38,7 @@ def sparkline(values: list[int], width: int = 20) -> str:
 
 
 def print_legacy_session_report(
-    grok_home,
+    grok_home: Path,
     *,
     since: str | None,
     date_from: str | None,

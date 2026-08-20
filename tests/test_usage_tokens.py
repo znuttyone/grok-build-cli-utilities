@@ -230,9 +230,7 @@ def test_load_dedupe_and_filter(tmp_path: Path):
 
     recs = load_turn_usage(tmp_path / "sessions")
     assert len(recs) == 3  # p1 kept max, p2, p3
-    filtered = filter_usage(
-        recs, date_from=date(2026, 8, 1), date_to=date(2026, 8, 5)
-    )
+    filtered = filter_usage(recs, date_from=date(2026, 8, 1), date_to=date(2026, 8, 5))
     assert len(filtered) == 2
     assert all(r.project == "Blessed-Bits" for r in filtered)
 
@@ -379,9 +377,7 @@ def test_usage_report_tokens(tmp_path: Path):
         reasoning=10,
         ticks=1000,
     )
-    r = runner.invoke(
-        app, ["-g", str(grok), "usage", "report", "--by", "app", "--json"]
-    )
+    r = runner.invoke(app, ["-g", str(grok), "usage", "report", "--by", "app", "--json"])
     assert r.exit_code == 0, r.output
     data = _json_from_cli(r)
     assert data["mode"] == "tokens"
@@ -494,19 +490,13 @@ def test_resolve_cash_scale_by_auth_path():
     s, src = resolve_cash_scale(auth_effective="api_key")
     assert s == 1.0
     assert "api_key" in src
-    s, src = resolve_cash_scale(
-        auth_effective="supergrok_session", weekly_usage_pct=10.0
-    )
+    s, src = resolve_cash_scale(auth_effective="supergrok_session", weekly_usage_pct=10.0)
     assert s == 0.0
     assert "pool" in src
-    s, src = resolve_cash_scale(
-        auth_effective="supergrok_session", weekly_usage_pct=100.0
-    )
+    s, src = resolve_cash_scale(auth_effective="supergrok_session", weekly_usage_pct=100.0)
     assert s == 1.9
     assert "overage" in src
-    s, src = resolve_cash_scale(
-        auth_effective="supergrok_session", weekly_usage_pct=None
-    )
+    s, src = resolve_cash_scale(auth_effective="supergrok_session", weekly_usage_pct=None)
     assert s == 1.0
     assert "unknown" in src
 
@@ -523,9 +513,7 @@ def test_build_token_cost_window_est_by_key(tmp_path: Path):
     grok = tmp_path / ".grok"
     sess = grok / "sessions" / "AppX" / "s1"
     sess.mkdir(parents=True)
-    (grok / "auth.json").write_text(
-        '{"access_token": "' + "x" * 40 + '"}', encoding="utf-8"
-    )
+    (grok / "auth.json").write_text('{"access_token": "' + "x" * 40 + '"}', encoding="utf-8")
     _write_turn(
         sess / "updates.jsonl",
         prompt_id="p1",
@@ -538,9 +526,7 @@ def test_build_token_cost_window_est_by_key(tmp_path: Path):
         total=1_000_000,
     )
     records = load_turn_usage(grok / "sessions")
-    win = build_token_cost_window(
-        grok, records, group="app", rates_model="grok-4.5"
-    )
+    win = build_token_cost_window(grok, records, group="app", rates_model="grok-4.5")
     assert win.list_total > 0
     assert win.est_by_key
     assert abs(sum(win.est_by_key.values()) - win.est_total) < 1e-6
@@ -788,6 +774,63 @@ def test_plan_advisor_low_volume_api_est_wins():
     assert a.supergrok.overage_list_usd == 0.0
     assert a.winner == "api_est"
     assert DEFAULT_HEAVY_WEEKLY_INCLUDE_USD == 150.0
+
+
+def test_plan_advisor_export_mirrors_tui_promos_and_active_pin():
+    """--json candidates match -P: Heavy promo rows when tops exist, active pin."""
+    from grok_build_cli_utilities.utils.usage_display import plan_advisor_export
+
+    # 2d window at ~$45.32 list$ → ~$680/mo (PR Heavy sample). Advisor Pure API
+    # uses API-scale list$, not mixed est$. SuperGrok pack tops ~$600; Heavy still
+    # has a pack so hv_* rows exist and ★ is Heavy @ −40% (not SuperGrok @ −40%).
+    a = plan_advisor(
+        list_usd=45.32,
+        est_usd=45.32,
+        tokens=279_700_000,
+        cache_pct=98.0,
+        cash_scale=1.0,
+        window_days=2,
+        project_days=30,
+    )
+    assert a.heavy.overage_list_usd > 0.5
+    assert a.supergrok.overage_list_usd > 100
+
+    out = plan_advisor_export(a, active_topoff_discount=0.25)
+    by_id = {c["id"]: c for c in out["candidates"]}
+    assert {
+        "api",
+        "sg_full",
+        "hv_full",
+        "sg_20",
+        "sg_25",
+        "sg_40",
+        "hv_20",
+        "hv_25",
+        "hv_40",
+    } <= set(by_id)
+    for cid, c in by_id.items():
+        assert "active" in c
+        if cid in ("sg_25", "hv_25"):
+            assert c["active"] is True
+        else:
+            assert c["active"] is False
+    assert by_id["hv_full"]["pack_tops_face"] > 0.5
+    assert out["best"]["id"] == "hv_40"
+
+    low = plan_advisor(
+        list_usd=20.0,
+        est_usd=11.4,
+        tokens=5_000_000,
+        cache_pct=90.0,
+        cash_scale=0.57,
+        window_days=30,
+        project_days=30,
+    )
+    low_out = plan_advisor_export(low, active_topoff_discount=0.0)
+    low_ids = {c["id"] for c in low_out["candidates"]}
+    assert "hv_full" in low_ids
+    assert "hv_40" not in low_ids
+    assert all(c["active"] is False for c in low_out["candidates"])
 
 
 def test_usage_report_by_app_includes_est(tmp_path: Path):

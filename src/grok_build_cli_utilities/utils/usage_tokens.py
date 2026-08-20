@@ -428,7 +428,11 @@ def allocate_paygo_by_type(
         c = (b.cached / sum_cached * types.cached) if sum_cached > 0 and types.cached else 0.0
         i = (b.uncached_in / sum_in * types.input) if sum_in > 0 and types.input else 0.0
         o = (b.output / sum_out * types.output) if sum_out > 0 and types.output else 0.0
-        r = (b.reasoning / sum_reason * types.reasoning) if sum_reason > 0 and types.reasoning else 0.0
+        r = (
+            (b.reasoning / sum_reason * types.reasoning)
+            if sum_reason > 0 and types.reasoning
+            else 0.0
+        )
         # If a type pool has $ but zero local tokens of that type, that pool is unallocated
         # (left on the floor) — rare; prefer keeping sum ≈ types.total via only positive bases.
         detail[b.key] = {
@@ -497,9 +501,7 @@ def turn_list_usd(
     base = rates or rates_for_model(str(model) if model else None)
     # Long-context 2× is already inside costUsdTicks. Do not apply it to
     # turn-aggregate input (a 1M-token turn may be many <200k calls).
-    out_n = completion_tokens(
-        output=output, reasoning=reasoning, total=total, input_tokens=inn
-    )
+    out_n = completion_tokens(output=output, reasoning=reasoning, total=total, input_tokens=inn)
     return api_estimate_usd(
         cached=cached,
         uncached_in=max(inn - cached, 0),

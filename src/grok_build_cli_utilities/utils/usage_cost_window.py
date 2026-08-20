@@ -127,11 +127,7 @@ def build_token_cost_window(
 
     force_uniform: float | None = None
     force_src: str | None = None
-    if (
-        prepaid_usd is not None
-        and credits_remaining is not None
-        and list_seed > 0
-    ):
+    if prepaid_usd is not None and credits_remaining is not None and list_seed > 0:
         force_uniform, force_src = resolve_cash_scale(
             prepaid_usd=prepaid_usd,
             credits_remaining=credits_remaining,
@@ -171,8 +167,9 @@ def build_token_cost_window(
         cash_scale_val, cash_scale_src = force_uniform, force_src or "uniform"
     elif mix.slices:
         top_slice = mix.slices[0]
-        cash_scale_val, cash_scale_src = top_slice.scale, (
-            f"auth_mix · primary {top_slice.path} @ {top_slice.scale:g}"
+        cash_scale_val, cash_scale_src = (
+            top_slice.scale,
+            (f"auth_mix · primary {top_slice.path} @ {top_slice.scale:g}"),
         )
     else:
         cash_scale_val, cash_scale_src = resolve_cash_scale(
@@ -181,9 +178,7 @@ def build_token_cost_window(
             weekly_usage_pct=weekly_pct,
         )
 
-    topoff_d, topoff_src = resolve_topoff_discount(
-        usage_cfg, cli_discount=topoff_discount
-    )
+    topoff_d, topoff_src = resolve_topoff_discount(usage_cfg, cli_discount=topoff_discount)
     est_cash_total = apply_topoff_discount(est_total, topoff_d)
 
     # Sort buckets by list$ (activity)

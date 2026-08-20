@@ -63,13 +63,18 @@ def _walk_tokenish(obj: Any) -> bool:
     if isinstance(obj, dict):
         for k, v in obj.items():
             kl = str(k).lower()
-            if kl in (
-                "access_token",
-                "refresh_token",
-                "id_token",
-                "token",
-                "session_token",
-            ) and isinstance(v, str) and len(v.strip()) > 8:
+            if (
+                kl
+                in (
+                    "access_token",
+                    "refresh_token",
+                    "id_token",
+                    "token",
+                    "session_token",
+                )
+                and isinstance(v, str)
+                and len(v.strip()) > 8
+            ):
                 return True
             # OIDC-style nested "key" that is not empty
             if kl in ("key", "api_key") and isinstance(v, str) and len(v.strip()) > 8:
@@ -149,15 +154,13 @@ def detect_auth(grok_home: Path | str, *, env: dict[str, str] | None = None) -> 
         if api_present:
             effective = "api_key"
             label = "API key (XAI_API_KEY)"
-            notes.append('config [auth] preferred_method prefers API key')
+            notes.append("config [auth] preferred_method prefers API key")
             if session_present:
                 notes.append("SuperGrok session file also present; preferred_method overrides")
         elif session_present:
             effective = "supergrok_session"
             label = "SuperGrok session (login / cached_token)"
-            notes.append(
-                "preferred_method=api_key but XAI_API_KEY unset; session still usable"
-            )
+            notes.append("preferred_method=api_key but XAI_API_KEY unset; session still usable")
         else:
             effective = "none"
             label = "No auth detected"
@@ -179,9 +182,7 @@ def detect_auth(grok_home: Path | str, *, env: dict[str, str] | None = None) -> 
         notes.append("No auth.json session and XAI_API_KEY unset")
 
     if effective == "supergrok_session":
-        spend = (
-            "Weekly pool + SuperGrok auto top-ups; often missing from X console API-key Usage."
-        )
+        spend = "Weekly pool + SuperGrok auto top-ups; often missing from X console API-key Usage."
     elif effective == "api_key":
         spend = "API prepaid / paygo lens; console Usage may still lag."
     else:
@@ -238,10 +239,7 @@ def format_auth_plan_advisor_line(
             "Auth now: SuperGrok session — Pure API and Heavy rows are "
             "what-if (not your current bill)."
         )
-    return (
-        "Auth now: SuperGrok session — Pure API row is a what-if "
-        "(not your current bill)"
-    )
+    return "Auth now: SuperGrok session — Pure API row is a what-if (not your current bill)"
 
 
 def _method_from_ctx(ctx: dict[str, Any]) -> str | None:
