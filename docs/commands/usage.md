@@ -102,6 +102,7 @@ Built-in (unless you force a single number):
 | API key | **1.0** |
 | SuperGrok / Heavy pool (weekly &lt; ~99%) | **0.0** |
 | SuperGrok / Heavy overage (weekly ~100%) | **1.9** |
+| Before first in-pool sample (≤7d; truncated log) | **0.0** (inferred same-week pool) |
 | SuperGrok / Heavy weekly% unknown | **1.0** + caveat |
 
 **Force priority** (disables path split when set):

@@ -484,9 +484,10 @@ def estimate_with_auth_mix(
 
     SuperGrok/Heavy pool vs overage uses **weekly % at turn time** from billing
     log when available — not "current week only" (which zeroed historical
-    top-off burn). When weekly % is missing for a session turn, scale is list$
-    (regime unknown). ``subscriptionTier`` (same billing lines) relabels
-    SuperGrok slices as Heavy when the log says so at turn time.
+    top-off burn). Turns before the first sample reuse that sample when it is
+    still in-pool and within one week (truncated ``unified.jsonl``). Otherwise
+    missing weekly % → list$ scale (regime unknown). ``subscriptionTier``
+    relabels SuperGrok slices as Heavy when the log says so at turn time.
 
     Optional group_key_fn(record) → str accumulates est$/list$ per key in one pass
     (avoids re-running mix per report bucket).
@@ -519,11 +520,11 @@ def estimate_with_auth_mix(
                 path = auth_effective_at(ts, change_points, fallback=fallback_auth)
             else:
                 path = fallback_auth
-            # Per-turn weekly % when timeline exists; else None → regime unknown @ list$
+            # Per-turn weekly % when timeline exists. None only if before the
+            # first sample *and* in-pool holdback does not apply.
             w_pct = weekly_usage_pct
             if ts is not None and weekly_timeline:
-                w_at = weekly_usage_at(ts, weekly_timeline)
-                w_pct = w_at  # may be None if before first billing sample
+                w_pct = weekly_usage_at(ts, weekly_timeline)
             auth_for_scale = path if path != "unknown" else fallback_auth
             if path == "unknown":
                 scale, scale_src = resolve_cash_scale(

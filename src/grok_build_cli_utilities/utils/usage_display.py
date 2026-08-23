@@ -125,13 +125,15 @@ def print_wallet_auth_line(win: TokenCostWindow, *, detail: bool = False) -> Non
     if has_heavy_unknown:
         console.print(
             "[dim]Heavy (?): weekly % unknown at turn time "
-            "(before billing log / gap) → est$ uses list$ scale, "
+            "(before billing log / gap, and first sample was already "
+            "overage or older than 7d) → est$ uses list$ scale, "
             "not pool 0 or overage 1.9[/dim]"
         )
     if has_sg_unknown:
         console.print(
             "[dim]SuperGrok (?): weekly % unknown at turn time "
-            "(before billing log / gap) → est$ uses list$ scale, "
+            "(before billing log / gap, and first sample was already "
+            "overage or older than 7d) → est$ uses list$ scale, "
             "not pool 0 or overage 1.9[/dim]"
         )
 

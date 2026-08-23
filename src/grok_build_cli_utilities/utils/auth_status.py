@@ -14,7 +14,7 @@ import json
 import os
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -370,21 +370,51 @@ def auth_effective_at(
     return chosen
 
 
+# Session turns often outlive unified.jsonl (Build truncates the log).
+# creditUsagePercent is cumulative within a weekly period: if the first
+# remaining sample is still in-pool, earlier same-week turns were too.
+BILLING_HOLD_BACK = timedelta(days=7)
+# Keep in lockstep with pricing.OVERAGE_WEEKLY_PCT_THRESHOLD (no import cycle).
+BILLING_POOL_HOLD_BACK_BELOW = 99.0
+
+
+def _as_utc(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def _within_hold_back(ts: datetime, first_dt: datetime) -> bool:
+    t = _as_utc(ts)
+    f = _as_utc(first_dt)
+    return t < f and (f - t) <= BILLING_HOLD_BACK
+
+
 def weekly_usage_at(
     ts: datetime,
     timeline: list[tuple[datetime, float]],
 ) -> float | None:
-    """Last known weekly usage % at or before ts; None if before first sample."""
+    """Last known weekly usage % at or before ts; None if before first sample.
+
+    When ``ts`` is before the first sample but within ``BILLING_HOLD_BACK``
+    and that first reading is still below overage, return it (inferred
+    same-week pool). Do not invent overage if the first sample is ~100%.
+    """
     if not timeline:
         return None
-    t = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    t = _as_utc(ts)
     chosen: float | None = None
     for dt, pct in timeline:
-        if dt <= t:
+        if _as_utc(dt) <= t:
             chosen = pct
         else:
             break
-    return chosen
+    if chosen is not None:
+        return chosen
+    first_dt, first_pct = timeline[0]
+    if first_pct < BILLING_POOL_HOLD_BACK_BELOW and _within_hold_back(t, first_dt):
+        return first_pct
+    return None
 
 
 def normalize_subscription_tier(raw: str | None) -> str | None:
@@ -414,17 +444,28 @@ def subscription_tier_at(
     ts: datetime,
     timeline: list[tuple[datetime, str]],
 ) -> str | None:
-    """Last known normalized tier at or before ts; None if before first sample."""
+    """Last known normalized tier at or before ts; None if before first sample.
+
+    Before the first sample (within ``BILLING_HOLD_BACK``), reuse that sample's
+    tier only when the log never shows another plan (so an upgrade is not
+    projected backward).
+    """
     if not timeline:
         return None
-    t = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    t = _as_utc(ts)
     chosen: str | None = None
     for dt, tier in timeline:
-        if dt <= t:
+        if _as_utc(dt) <= t:
             chosen = tier
         else:
             break
-    return chosen
+    if chosen is not None:
+        return chosen
+    first_dt, first_tier = timeline[0]
+    unique = {tier for _, tier in timeline}
+    if len(unique) == 1 and _within_hold_back(t, first_dt):
+        return first_tier
+    return None
 
 
 def _empty_billing(
@@ -535,7 +576,10 @@ def load_billing_snapshot(
             if abs(pct - out[-1][1]) >= 0.5:
                 out.append((dt, pct))
             else:
-                out[-1] = (dt, pct)
+                # Keep earliest ts of this plateau so weekly_usage_at covers
+                # it; only the % updates. Moving ts forward opened a growing
+                # "unknown" gap and billed historical pool usage at list$.
+                out[-1] = (out[-1][0], pct)
 
     raw_tiers.sort(key=lambda x: x[0])
     tier_out: list[tuple[datetime, str]] = []

@@ -40,6 +40,7 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
        API path              → scale 1.0 (est$ ≈ list$)
        SuperGrok / Heavy pool    → weekly limit < ~100% → Extra Credits idle → ~0
        SuperGrok / Heavy overage → weekly ~100% → Extra Credits burn → ~1.9× list$
+       before first in-pool sample (≤7d) → pool ~0 (truncated billing log)
        weekly % unknown          → scale 1.0 + caveat (do not invent pool/overage)
      Optional override: --cash-scale or [usage] cash_scale (legacy single blend).
 

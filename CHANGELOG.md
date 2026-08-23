@@ -15,6 +15,9 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 - Wallet labels (credits **remaining**, weekly limit **% used**); SuperGrok (?) footnote; **`--detail`** gates savings attribution, 1.9× source, hybrid tip, week pace, per-app regime; JSON: `wallet`, `plan_advisor.candidates/best` (Heavy promo rows + `active` pin for `--topoff-discount`), `week_list_usd`, `list_pct`, per-bucket `regime_list_pct`.
 - `est_cash$` = est$ × (1 − discount) when promo modeled; primary plan “best fit” stays full price.
 
+### Fixed
+- **est$ jumped as `unified.jsonl` grew / truncated**: weekly-timeline compaction moved plateau timestamps forward, so same-week Heavy/SuperGrok pool turns fell *before* the first remaining billing sample and were billed at list$ (`SuperGrok (?)` ×1). Compaction now keeps the earliest timestamp of each weekly-% plateau. Turns before the first sample reuse that sample when it is still in-pool and within 7 days (and label Heavy when the log only ever shows Heavy). First-sample overage still stays unknown @ list$ so historical Extra Credits burn is not zeroed.
+
 ### Changed
 - **list$** uses Build **`costUsdTicks ÷ 10^10`** (xAI cost tracking — same $ as `/usage` Session Cost). Pass `-m` to reconstruct from a published rate table instead. Tick conversion was previously ÷1e9 (10× too high).
 - **list$ default rate table** (fallback / `-m`) is **grok-4.6** ($2 / $0.50 / $6 per 1M, ≤200k; verified 2026-08-13). Reconstruction does not double-count reasoning already inside `outputTokens`. Pin older 4.5 cache rate with `-m grok-4.5` ($2 / $0.30 / $6). `grok-4.6*` no longer fuzzy-matches grok-4 ($3 / $15).

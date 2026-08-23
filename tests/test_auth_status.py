@@ -20,6 +20,7 @@ from grok_build_cli_utilities.utils.auth_status import (
     load_billing_snapshot,
     normalize_subscription_tier,
     subscription_tier_at,
+    weekly_usage_at,
 )
 
 runner = CliRunner()
@@ -155,6 +156,90 @@ def test_billing_snapshot_reads_subscription_tier(tmp_path: Path):
         subscription_tier_at(datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc), snap.tier_timeline)
         == "heavy"
     )
+
+
+def test_billing_weekly_timeline_keeps_earliest_plateau_ts(tmp_path: Path):
+    """Same weekly % must not slide the first timestamp forward."""
+    grok = tmp_path / ".grok"
+    log_dir = grok / "logs"
+    log_dir.mkdir(parents=True)
+    lines = [
+        {
+            "ts": "2026-08-22T11:50:42Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok Heavy",
+                "config": {
+                    "creditUsagePercent": 15.0,
+                    "prepaidBalance": {"val": 15208},
+                },
+            },
+        },
+        {
+            "ts": "2026-08-22T12:15:07Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok Heavy",
+                "config": {
+                    "creditUsagePercent": 15.0,
+                    "prepaidBalance": {"val": 15208},
+                },
+            },
+        },
+        {
+            "ts": "2026-08-22T13:22:59Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok Heavy",
+                "config": {
+                    "creditUsagePercent": 16.0,
+                    "prepaidBalance": {"val": 15208},
+                },
+            },
+        },
+    ]
+    (log_dir / "unified.jsonl").write_text(
+        "\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8"
+    )
+    snap = load_billing_snapshot(grok)
+    assert len(snap.weekly_timeline) == 2
+    first_dt, first_pct = snap.weekly_timeline[0]
+    assert first_pct == 15.0
+    assert first_dt.hour == 11 and first_dt.minute == 50
+    assert snap.weekly_timeline[1][1] == 16.0
+    from datetime import datetime, timezone
+
+    mid = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
+    assert weekly_usage_at(mid, snap.weekly_timeline) == 15.0
+
+
+def test_weekly_usage_holdback_in_pool_but_not_overage():
+    from datetime import datetime, timezone
+
+    pool = [(datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc), 15.0)]
+    # Same week, before first sample, still in-pool → reuse 15%
+    assert weekly_usage_at(datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc), pool) == 15.0
+    # Older than one weekly period → still unknown
+    assert weekly_usage_at(datetime(2026, 8, 14, 0, 0, tzinfo=timezone.utc), pool) is None
+    # First remaining sample already overage → do not invent pool or 1.9
+    over = [(datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc), 100.0)]
+    assert weekly_usage_at(datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc), over) is None
+
+
+def test_subscription_tier_holdback_only_when_unique():
+    from datetime import datetime, timezone
+
+    heavy_only = [(datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc), "heavy")]
+    assert (
+        subscription_tier_at(datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc), heavy_only)
+        == "heavy"
+    )
+    mixed = [
+        (datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc), "supergrok"),
+        (datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc), "heavy"),
+    ]
+    # Before the first sample of a mixed log: do not guess SuperGrok vs Heavy
+    assert subscription_tier_at(datetime(2026, 8, 15, 0, 0, tzinfo=timezone.utc), mixed) is None
 
 
 def test_normalize_subscription_tier():

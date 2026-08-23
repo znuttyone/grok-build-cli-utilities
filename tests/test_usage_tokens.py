@@ -665,7 +665,7 @@ def test_estimate_with_auth_mix_splits_paths():
 
 
 def test_historical_supergrok_without_weekly_uses_list_unknown():
-    """Before billing log samples, SuperGrok must not invent pool 0 or overage 1.9."""
+    """Before an *overage* first sample, SuperGrok must not invent pool 0 or 1.9."""
     from datetime import datetime, timezone
 
     from grok_build_cli_utilities.utils.auth_status import AuthHistoryEvent
@@ -696,6 +696,41 @@ def test_historical_supergrok_without_weekly_uses_list_unknown():
     )
     assert abs(mix.est_total - 0.30 * 1.0) < 1e-6
     assert mix.slices and mix.slices[0].path == "supergrok_unknown"
+
+
+def test_pre_log_in_pool_heavy_uses_pool_not_list():
+    """Truncated billing log: first sample still in-pool → earlier same-week Heavy is pool 0."""
+    from datetime import datetime, timezone
+
+    from grok_build_cli_utilities.utils.auth_status import AuthHistoryEvent
+    from grok_build_cli_utilities.utils.pricing import estimate_with_auth_mix
+    from grok_build_cli_utilities.utils.usage_tokens import UsageRec
+
+    rates = rates_for_model("grok-4.5")
+    r = UsageRec(
+        prompt_id="old",
+        ts=datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc),
+        project="ProfitGuard",
+        cwd="/ProfitGuard",
+        session_id="s1",
+        input=1_000_000,
+        cached=1_000_000,
+        total=1_000_000,
+    )
+    pts = [AuthHistoryEvent("2026-08-01T00:00:00+00:00", "cached_token", "sel")]
+    weekly_tl = [(datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc), 15.0)]
+    tier_tl = [(datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc), "heavy")]
+    mix = estimate_with_auth_mix(
+        [r],
+        rates,
+        change_points=pts,
+        weekly_usage_pct=45.0,
+        weekly_timeline=weekly_tl,
+        tier_timeline=tier_tl,
+        fallback_auth="supergrok_session",
+    )
+    assert mix.slices and mix.slices[0].path == "heavy_pool"
+    assert mix.est_total == 0.0
 
 
 def test_auth_mix_labels_heavy_pool_from_tier_timeline():
