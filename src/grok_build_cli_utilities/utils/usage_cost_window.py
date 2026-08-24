@@ -7,7 +7,7 @@ est$) → totals. Command modules only render.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,8 @@ class TokenCostWindow:
     prepaid_balance: float | None
     subscription_tier: str | None  # heavy | supergrok | None
     subscription_tier_raw: str | None
+    weekly_period_start: datetime | None
+    weekly_period_end: datetime | None
     window_tiers: list[str]
     usage_cfg: dict[str, Any]
     rates: TokenRates
@@ -214,6 +216,8 @@ def build_token_cost_window(
         prepaid_balance=prepaid_balance,
         subscription_tier=billing.subscription_tier,
         subscription_tier_raw=billing.subscription_tier_raw,
+        weekly_period_start=billing.weekly_period_start,
+        weekly_period_end=billing.weekly_period_end,
         window_tiers=window_tiers,
         usage_cfg=usage_cfg,
         rates=rates,

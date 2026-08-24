@@ -9,9 +9,12 @@ import typer
 from ..utils.auth_status import (
     auth_history_change_points,
     detect_auth,
+    format_weekly_reset_local,
+    iso_or_none,
     load_auth_history,
     load_billing_snapshot,
     subscription_tier_label,
+    weekly_pool_reset_subject,
 )
 from ..utils.common import console, get_grok_home, make_table, warn
 
@@ -44,12 +47,16 @@ def auth_status(
     plan = bill.subscription_tier
     plan_raw = bill.subscription_tier_raw
     plan_lab = subscription_tier_label(plan) if plan else None
+    reset_iso = iso_or_none(bill.weekly_period_end)
+    reset_local = format_weekly_reset_local(bill.weekly_period_end)
 
     if json_out:
         payload = {
             "auth": status.as_dict(),
             "extra_credits_usd": prepaid,
             "weekly_usage_pct": weekly_pct,
+            "weekly_period_start": iso_or_none(bill.weekly_period_start),
+            "weekly_resets_at": reset_iso,
             "subscription_tier": plan,
             "subscription_tier_raw": plan_raw,
             "history": [e.as_dict() for e in changes] if history else None,
@@ -86,10 +93,23 @@ def auth_status(
         console.print(f"  Weekly {week_name} limit: [cyan]{weekly_pct:g}%[/cyan] used")
     else:
         console.print(f"  Weekly {week_name} limit: [dim](no billing sample in logs yet)[/dim]")
+    reset_what = weekly_pool_reset_subject(plan)
+    if reset_local:
+        console.print(
+            f"  {reset_what} resets: [cyan]{reset_local}[/cyan]",
+            no_wrap=True,
+            overflow="ignore",
+            crop=False,
+        )
+    elif prepaid is not None or weekly_pct is not None:
+        console.print(
+            f"  {reset_what} resets: [dim](no currentPeriod.end in billing log yet)[/dim]"
+        )
     console.print(
         "  [dim]Best-effort last fetch from ~/.grok/logs/unified.jsonl "
-        "(ctx.subscriptionTier + wallet) — not live network; stale until "
-        "Build refetches billing. Session /usage turns do not store the plan.[/dim]"
+        "(ctx.subscriptionTier + wallet + currentPeriod.end) — not live network; "
+        "stale until Build refetches billing. Session /usage turns do not store "
+        "the plan. Resets clock is local, same as /usage.[/dim]"
     )
 
     console.print()

@@ -5,6 +5,7 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Weekly pool reset** on `auth status` / cost footer / JSON (`weekly_resets_at`): `currentPeriod.end` from the same billing log line Build `/usage` uses (local clock matches “Resets: August 27, 19:08”). Fallback `billingPeriodEnd`.
 - **SuperGrok vs Heavy from billing log** (`ctx.subscriptionTier` on `billing: fetched credits config`). Cost mix/wallet/auth status/`-P` label **Heavy pool** vs SuperGrok; planner footer marks the **current plan** and treats the other subscription row as a what-if. Session `/usage` turns do not store the plan.
 - **grok-4.6 list-rate profile** (`-m grok-4.6` / `4.6` / `grok-4.6-build`): $2 / $0.50 / $6 per 1M (≤200k).
 - **`grok-utils auth status`**: SuperGrok session vs API key; optional `--history`; **Extra Credits $** + **weekly %** from billing log.

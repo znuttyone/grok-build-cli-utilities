@@ -22,9 +22,9 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 | **Auto topup $20** | Build UI | Card charge to *refill* Extra Credits | **No** — not “this app cost $20” and not in the table |
 | **Auth path** | `auth status` / footer | SuperGrok or Heavy session vs API key | **Yes for est$** (path/mix). Not list$ |
 | **Plan (SuperGrok vs Heavy)** | billing log / footer / `-P` | `ctx.subscriptionTier` on billing fetch lines | Labels mix + planner; not list$ |
-| **Wallet / auth line** | `usage cost` / `usage report` footer | `Extra Credits $… · weekly N% · Heavy session` | Snapshot only — see FAQ |
+| **Wallet / auth line** | `usage cost` / `usage report` footer | `Extra Credits $… · weekly N% · Heavy session` plus **Weekly Heavy pool resets …** | Snapshot only — see FAQ |
 
-**Auth matters for spend:** SuperGrok/Heavy session wins over `XAI_API_KEY` unless `preferred_method = "api_key"`. Wallet + plan come from billing lines in `logs/unified.jsonl` (`prepaidBalance`, `creditUsagePercent`, `subscriptionTier`) — not from `/usage` turn files. The Build `/usage` panel may still say SuperGrok after you upgrade.
+**Auth matters for spend:** SuperGrok/Heavy session wins over `XAI_API_KEY` unless `preferred_method = "api_key"`. Wallet + plan come from billing lines in `logs/unified.jsonl` (`prepaidBalance`, `creditUsagePercent`, `currentPeriod.end`, `subscriptionTier`) — not from `/usage` turn files. The Build `/usage` panel may still say SuperGrok after you upgrade. `resets` is `currentPeriod.end` in local time (same clock as `/usage` “Resets”).
 
 **What to use when**
 
@@ -134,7 +134,7 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 | `--api-estimate` | Print list-rate breakdown |
 | `--plan-advisor` / `-P` | Compact plan comparison (one Pure API row when scale=1) |
 | `--detail` / `-v` | Richer est$ mix + promo table + overage one-liner (FAQ still via `usage info`) |
-| `--json` | Machine-readable (`prepaid_balance_usd`, `weekly_usage_pct`, …) |
+| `--json` | Machine-readable (`prepaid_balance_usd`, `weekly_usage_pct`, `weekly_resets_at`, …) |
 
 ### Plan advisor (`--plan-advisor` / `-P`)
 

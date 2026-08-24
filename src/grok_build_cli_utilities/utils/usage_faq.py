@@ -4,7 +4,7 @@
 COST_CAVEATS_SHORT = """\
 list$ = estimated $ at public API prices × your local tokens.
 est$  = path/regime spend lens (API ≈ list$; SuperGrok/Heavy pool ≈ 0; overage ≈ 1.9× list$).
-Extra Credits $, weekly %, and SuperGrok vs Heavy come from billing lines in logs/unified.jsonl.
+Extra Credits $, weekly %, resets, and SuperGrok vs Heavy come from billing lines in logs/unified.jsonl.
 Build Session Cost / Credits / Weekly limit are different meters — they will not match list$/est$.
 FAQ: grok-utils usage info   ·   Tune: path scales or --cash-scale / --topoff-discount"""
 
@@ -68,17 +68,20 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
        • Weekly % — only switch for session *est$* regime (pool ≈ 0 vs
          overage ≈ 1.9×). It does not change list$ or the Share bars.
      Offline snapshot source: logs/unified.jsonl billing lines
-     (prepaidBalance, creditUsagePercent, subscriptionTier) via auth status /
-     cost footer.
+     (prepaidBalance, creditUsagePercent, currentPeriod.end, subscriptionTier)
+     via auth status / cost footer.
 
   Q: What does "Wallet / auth  Extra Credits $… · weekly …% · Heavy session"
-     on usage cost / report mean?
-  A: One-line *account snapshot for this machine right now* — not per app and
-     not the table math:
+     plus a "Weekly Heavy pool resets  August 27, 19:08" line mean?
+  A: Account snapshot for this machine right now — not per app and not the
+     table math:
        Extra Credits $  — prepaid SuperGrok/Heavy balance left (billing log)
        weekly N%        — SuperGrok or Heavy weekly pool used so far this period
                           (only switches *est$* pool vs overage;
                           does not change list$ or Share bars)
+       Weekly … pool resets — own line; included weekly pool (not Extra Credits)
+                          refills at currentPeriod.end (same clock as Build
+                          /usage "Resets"; not wrapped with the wallet row)
        SuperGrok / Heavy / API — login path + plan from billing
                           subscriptionTier (not from /usage turn files)
      Does not subtract Credits from list$/est$. Does not mean "this app spent

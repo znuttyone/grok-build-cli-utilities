@@ -10,6 +10,7 @@ import typer
 from rich.progress import Progress
 from rich.table import Table
 
+from ..utils.auth_status import iso_or_none
 from ..utils.common import (
     console,
     format_age,
@@ -284,6 +285,8 @@ def report(
                         "topoff_discount_source": win.topoff_src,
                         "auth": win.auth_st.as_dict(),
                         "weekly_usage_pct": win.weekly_pct,
+                        "weekly_period_start": iso_or_none(win.weekly_period_start),
+                        "weekly_resets_at": iso_or_none(win.weekly_period_end),
                         "prepaid_balance_usd": win.prepaid_balance,
                         "auth_mix": win.mix.as_dict(),
                         "totals": {
@@ -584,7 +587,7 @@ def cost_report(
             Pass -m MODEL to reconstruct from a published rate table instead.
     est$  = list$ × path/regime scale (API≈1.0; SuperGrok pool≈0; overage≈1.9)
             via auth timeline mix unless --cash-scale / prepaid-fit forces one scale.
-    Footer: Wallet / auth snapshot (Extra Credits · weekly % · path). FAQ: usage info
+    Footer: Wallet / auth snapshot (Extra Credits · weekly % · path) + weekly pool resets line. FAQ: usage info
 
       # Closed window
       grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app
@@ -781,6 +784,8 @@ def cost_report(
                 "extra_credits_remaining_usd": prepaid_balance,
                 "weekly_supergrok_limit_pct_used": weekly_pct,
                 "weekly_limit_pct_used": weekly_pct,
+                "weekly_period_start": iso_or_none(win.weekly_period_start),
+                "weekly_resets_at": iso_or_none(win.weekly_period_end),
                 "subscription_tier": win.subscription_tier,
                 "subscription_tier_raw": win.subscription_tier_raw,
                 "subscription_tier_label": (
@@ -791,6 +796,7 @@ def cost_report(
                 "auth_path": auth_st.effective,
             },
             "weekly_usage_pct": weekly_pct,
+            "weekly_resets_at": iso_or_none(win.weekly_period_end),
             "subscription_tier": win.subscription_tier,
             "prepaid_balance_usd": prepaid_balance,
             "topoff_discount_scenarios": topoff_scenarios,

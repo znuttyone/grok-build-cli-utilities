@@ -384,6 +384,75 @@ def _as_utc(ts: datetime) -> datetime:
     return ts
 
 
+def parse_iso_dt(raw: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp from a billing log field."""
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def iso_or_none(dt: datetime | None) -> str | None:
+    """JSON-friendly ISO-8601, or None."""
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+_MONTHS_EN = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def format_weekly_reset_local(dt: datetime | None) -> str | None:
+    """Build /usage-style reset clock: 'August 27, 19:08' in the local timezone."""
+    if dt is None:
+        return None
+    local = dt.astimezone()
+    return f"{_MONTHS_EN[local.month - 1]} {local.day}, {local.strftime('%H:%M')}"
+
+
+def period_bounds_from_cfg(cfg: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
+    """Weekly pool window from a billing config object.
+
+    Prefer ``currentPeriod.{start,end}`` (what /usage "Resets" uses); fall back
+    to ``billingPeriodStart`` / ``billingPeriodEnd`` (same values on current
+    Build logs).
+    """
+    start: datetime | None = None
+    end: datetime | None = None
+    period = cfg.get("currentPeriod")
+    if isinstance(period, dict):
+        start = parse_iso_dt(period.get("start"))
+        end = parse_iso_dt(period.get("end"))
+    if start is None:
+        start = parse_iso_dt(cfg.get("billingPeriodStart"))
+    if end is None:
+        end = parse_iso_dt(cfg.get("billingPeriodEnd"))
+    return start, end
+
+
 def _within_hold_back(ts: datetime, first_dt: datetime) -> bool:
     t = _as_utc(ts)
     f = _as_utc(first_dt)
@@ -440,6 +509,14 @@ def subscription_tier_label(tier: str | None) -> str:
     return "subscription"
 
 
+def weekly_pool_reset_subject(tier: str | None) -> str:
+    """What ``currentPeriod.end`` resets: the included weekly pool, not Extra Credits."""
+    lab = subscription_tier_label(tier)
+    if lab == "subscription":
+        return "Weekly included pool"
+    return f"Weekly {lab} pool"
+
+
 def subscription_tier_at(
     ts: datetime,
     timeline: list[tuple[datetime, str]],
@@ -471,6 +548,8 @@ def subscription_tier_at(
 def _empty_billing(
     *,
     prepaid_usd: float | None = None,
+    weekly_period_start: datetime | None = None,
+    weekly_period_end: datetime | None = None,
 ) -> BillingSnapshot:
     return BillingSnapshot(
         weekly_timeline=[],
@@ -479,6 +558,8 @@ def _empty_billing(
         subscription_tier=None,
         subscription_tier_raw=None,
         tier_timeline=[],
+        weekly_period_start=weekly_period_start,
+        weekly_period_end=weekly_period_end,
     )
 
 
@@ -492,6 +573,9 @@ class BillingSnapshot:
     subscription_tier: str | None = None  # heavy | supergrok
     subscription_tier_raw: str | None = None
     tier_timeline: list[tuple[datetime, str]] = field(default_factory=list)
+    # currentPeriod / billingPeriod* — /usage "Resets" is weekly_period_end local
+    weekly_period_start: datetime | None = None
+    weekly_period_end: datetime | None = None
 
 
 # Cost windows need the upgrade change-point; 8MB covers typical unified.jsonl.
@@ -503,7 +587,7 @@ def load_billing_snapshot(
     *,
     max_bytes: int = DEFAULT_BILLING_SCAN_BYTES,
 ) -> BillingSnapshot:
-    """Parse billing: weekly %, prepaid $, and subscriptionTier timeline."""
+    """Parse billing: weekly %, prepaid $, plan, and weekly pool window."""
     log_path = Path(grok_home) / "logs" / "unified.jsonl"
     if not log_path.is_file():
         return _empty_billing()
@@ -516,6 +600,8 @@ def load_billing_snapshot(
     raw_tiers: list[tuple[datetime, str, str]] = []
     last_prepaid: float | None = None
     last_tier_raw: str | None = None
+    last_period_start: datetime | None = None
+    last_period_end: datetime | None = None
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             if size > max_bytes:
@@ -541,6 +627,11 @@ def load_billing_snapshot(
                         last_prepaid = float(pb["val"]) / 100.0
                     except (TypeError, ValueError):
                         pass
+                period_start, period_end = period_bounds_from_cfg(cfg)
+                if period_start is not None:
+                    last_period_start = period_start
+                if period_end is not None:
+                    last_period_end = period_end
                 ts_s = str(obj.get("ts") or "")
                 raw_ts = ts_s.replace("Z", "+00:00") if ts_s.endswith("Z") else ts_s
                 try:
@@ -566,7 +657,11 @@ def load_billing_snapshot(
                     continue
                 raw.append((dt, pct))
     except OSError:
-        return _empty_billing(prepaid_usd=last_prepaid)
+        return _empty_billing(
+            prepaid_usd=last_prepaid,
+            weekly_period_start=last_period_start,
+            weekly_period_end=last_period_end,
+        )
 
     raw.sort(key=lambda x: x[0])
     out: list[tuple[datetime, float]] = []
@@ -595,6 +690,8 @@ def load_billing_snapshot(
         subscription_tier=last_norm,
         subscription_tier_raw=last_tier_raw,
         tier_timeline=tier_out,
+        weekly_period_start=last_period_start,
+        weekly_period_end=last_period_end,
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -14,12 +15,15 @@ from grok_build_cli_utilities.utils.auth_status import (
     auth_history_change_points,
     detect_auth,
     format_auth_plan_advisor_line,
+    format_weekly_reset_local,
     latest_prepaid_balance_usd,
     latest_weekly_usage_percent,
     load_auth_history,
     load_billing_snapshot,
     normalize_subscription_tier,
+    period_bounds_from_cfg,
     subscription_tier_at,
+    weekly_pool_reset_subject,
     weekly_usage_at,
 )
 
@@ -249,6 +253,12 @@ def test_normalize_subscription_tier():
     assert normalize_subscription_tier("nope") is None
 
 
+def test_weekly_pool_reset_subject():
+    assert weekly_pool_reset_subject("heavy") == "Weekly Heavy pool"
+    assert weekly_pool_reset_subject("supergrok") == "Weekly SuperGrok pool"
+    assert weekly_pool_reset_subject(None) == "Weekly included pool"
+
+
 def test_plan_advisor_line_marks_heavy_current():
     from grok_build_cli_utilities.utils.auth_status import AuthStatus
 
@@ -268,6 +278,120 @@ def test_plan_advisor_line_marks_heavy_current():
     sg = format_auth_plan_advisor_line(st, subscription_tier="supergrok")
     assert sg is not None
     assert "Heavy rows are what-if" in sg
+
+
+def test_billing_snapshot_reads_weekly_period(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    log_dir = grok / "logs"
+    log_dir.mkdir(parents=True)
+    line = {
+        "ts": "2026-08-24T19:35:43.534Z",
+        "msg": "billing: fetched credits config",
+        "ctx": {
+            "subscriptionTier": "SuperGrok Heavy",
+            "config": {
+                "creditUsagePercent": 69.0,
+                "prepaidBalance": {"val": 15208},
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "start": "2026-08-20T23:08:01.959078+00:00",
+                    "end": "2026-08-27T23:08:01.959078+00:00",
+                },
+                "billingPeriodStart": "2026-08-20T23:08:01.959078+00:00",
+                "billingPeriodEnd": "2026-08-27T23:08:01.959078+00:00",
+            },
+        },
+    }
+    (log_dir / "unified.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    snap = load_billing_snapshot(grok)
+    assert snap.weekly_pct == 69.0
+    assert snap.weekly_period_end is not None
+    assert snap.weekly_period_end.year == 2026
+    assert snap.weekly_period_end.month == 8
+    assert snap.weekly_period_end.day == 27
+    assert snap.weekly_period_end.hour == 23
+    assert snap.weekly_period_end.minute == 8
+    assert snap.weekly_period_start is not None
+    assert snap.weekly_period_start.day == 20
+
+
+def test_period_bounds_fallback_to_billing_period_end():
+    start, end = period_bounds_from_cfg(
+        {
+            "billingPeriodStart": "2026-08-20T23:08:01+00:00",
+            "billingPeriodEnd": "2026-08-27T23:08:01+00:00",
+        }
+    )
+    assert start is not None and start.day == 20
+    assert end is not None and end.day == 27 and end.hour == 23
+
+
+def test_format_weekly_reset_local_new_york():
+    import time
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "America/New_York"
+    time.tzset()
+    try:
+        dt = datetime(2026, 8, 27, 23, 8, 1, tzinfo=timezone.utc)
+        assert format_weekly_reset_local(dt) == "August 27, 19:08"
+        assert format_weekly_reset_local(None) is None
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
+
+
+def test_auth_status_cli_shows_weekly_reset(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    log_dir = grok / "logs"
+    log_dir.mkdir(parents=True)
+    (grok / "auth.json").write_text(
+        json.dumps({"access_token": "x" * 40, "email": "u@example.com"}),
+        encoding="utf-8",
+    )
+    line = {
+        "ts": "2026-08-24T19:35:43.534Z",
+        "msg": "billing: fetched credits config",
+        "ctx": {
+            "subscriptionTier": "SuperGrok Heavy",
+            "config": {
+                "creditUsagePercent": 69.0,
+                "prepaidBalance": {"val": 15208},
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "start": "2026-08-20T23:08:01.959078+00:00",
+                    "end": "2026-08-27T23:08:01.959078+00:00",
+                },
+            },
+        },
+    }
+    (log_dir / "unified.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    r = runner.invoke(app, ["--grok-home", str(grok), "auth", "status", "--json"])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["weekly_usage_pct"] == 69.0
+    assert data["weekly_resets_at"] is not None
+    assert data["weekly_resets_at"].startswith("2026-08-27T23:08:01")
+    assert data["subscription_tier"] == "heavy"
+
+    human = runner.invoke(app, ["--grok-home", str(grok), "auth", "status"])
+    assert human.exit_code == 0, human.output
+    reset = format_weekly_reset_local(
+        datetime(2026, 8, 27, 23, 8, 1, 959078, tzinfo=timezone.utc)
+    )
+    assert reset is not None
+    assert "Weekly Heavy pool resets:" in human.output
+    assert reset in human.output
+    reset_lines = [
+        ln
+        for ln in human.output.splitlines()
+        if "Weekly Heavy pool resets:" in ln and reset in ln
+    ]
+    assert len(reset_lines) == 1
+    assert "Extra Credits" not in reset_lines[0]
 
 
 def test_auth_status_cli_shows_extra_credits(tmp_path: Path):

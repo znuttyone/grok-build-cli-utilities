@@ -36,7 +36,8 @@ Or remove `auth.json` (it can be recreated by `grok login`).
 | Field | Source |
 |---|---|
 | **Extra Credits $** | `billing: fetched credits config` → `prepaidBalance.val` (cents → USD) |
-| **Weekly SuperGrok %** | same line → `creditUsagePercent` |
+| **Weekly SuperGrok/Heavy %** | same line → `creditUsagePercent` |
+| **Weekly Heavy/SuperGrok pool resets** | same line → `currentPeriod.end` (fallback `billingPeriodEnd`); local time like Build `/usage` “Resets” |
 
 Same offline source as the SuperGrok Usage panel; **not** from turn usage files or a live API. Stale until Build refetches billing. Also printed on `usage cost` footer / JSON (`prepaid_balance_usd`, `weekly_usage_pct`).
 

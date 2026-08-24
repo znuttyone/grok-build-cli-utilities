@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from grok_build_cli_utilities.cli import app
+from grok_build_cli_utilities.utils.auth_status import format_weekly_reset_local
 from grok_build_cli_utilities.utils.pricing import (
     DEFAULT_CASH_SCALE,
     DEFAULT_CASH_SCALE_API,
@@ -990,6 +991,11 @@ def test_usage_cost_detects_heavy_from_billing_log(tmp_path: Path):
                     "config": {
                         "creditUsagePercent": 16.0,
                         "prepaidBalance": {"val": 15208},
+                        "currentPeriod": {
+                            "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                            "start": "2026-08-13T23:08:01+00:00",
+                            "end": "2026-08-20T23:08:01+00:00",
+                        },
                     },
                 },
             }
@@ -1027,6 +1033,8 @@ def test_usage_cost_detects_heavy_from_billing_log(tmp_path: Path):
     data = _json_from_cli(r)
     assert data["wallet"]["subscription_tier"] == "heavy"
     assert data["wallet"]["subscription_tier_label"] == "Heavy"
+    assert data["wallet"]["weekly_resets_at"] is not None
+    assert data["wallet"]["weekly_resets_at"].startswith("2026-08-20T23:08:01")
     assert data["plan_advisor"]["current_tier"] == "heavy"
     paths = {s["path"] for s in data["auth_mix"]["slices"]}
     assert "heavy_pool" in paths
@@ -1051,6 +1059,15 @@ def test_usage_cost_detects_heavy_from_billing_log(tmp_path: Path):
     assert "current plan" in out
     assert "what-if" in out
     assert "Plan from billing log: SuperGrok Heavy" in out
+    reset = format_weekly_reset_local(
+        datetime(2026, 8, 20, 23, 8, 1, tzinfo=timezone.utc)
+    )
+    assert reset is not None
+    reset_lines = [
+        ln for ln in out.splitlines() if reset in ln and "Weekly Heavy pool resets" in ln
+    ]
+    assert reset_lines, out
+    assert all("Extra Credits" not in ln for ln in reset_lines)
 
 
 def test_usage_cost_from_before_data_warns(tmp_path: Path):

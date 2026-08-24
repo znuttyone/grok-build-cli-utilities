@@ -7,7 +7,9 @@ from typing import Any
 from .auth_status import (
     format_auth_plan_advisor_line,
     format_auth_short,
+    format_weekly_reset_local,
     subscription_tier_label,
+    weekly_pool_reset_subject,
 )
 from .common import console, make_table
 from .pricing import (
@@ -109,6 +111,16 @@ def print_wallet_auth_line(win: TokenCostWindow, *, detail: bool = False) -> Non
         }.get(win.auth_st.effective, f"auth {win.auth_st.effective}")
     snap_parts.append(auth_lab)
     console.print(f"[bold]Wallet / auth[/bold]  {' · '.join(snap_parts)}")
+    reset_lab = format_weekly_reset_local(getattr(win, "weekly_period_end", None))
+    if reset_lab:
+        what = weekly_pool_reset_subject(getattr(win, "subscription_tier", None))
+        # Own line so the /usage-style clock never wraps with Extra Credits / weekly %.
+        console.print(
+            f"[bold]{what} resets[/bold]  {reset_lab}",
+            no_wrap=True,
+            overflow="ignore",
+            crop=False,
+        )
     if detail and win.mix.source == "auth_mix" and win.est_total + 0.01 < win.list_total * 0.5:
         console.print(
             "[dim]list$ = activity · est$ ≈ Extra Credits burn "
