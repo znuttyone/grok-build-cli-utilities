@@ -217,14 +217,10 @@ git clone https://github.com/cobusgreyling/grok-build-cli-utilities
 cd grok-build-cli-utilities
 pip install -e ".[dev]"
 
-# Quality gates (CI runs the same)
-make lint
-make format   # or make lint after edits
-make typecheck
-make cov
-# or simply: make test
-
-# See Makefile for all targets (lint, cov, build, clean, etc.)
+# Quality gates (same as GitHub Actions test job)
+make ci
+# If format-check fails: make format && make ci
+# See Makefile for lint / format / typecheck / cov individually
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide, testing expectations, and how to propose changes.

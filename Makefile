@@ -1,4 +1,4 @@
-.PHONY: help install dev-install lint format typecheck test cov build clean pre-commit docs-install docs-serve docs-build
+.PHONY: help install dev-install lint format format-check ruff-pin typecheck test cov ci build clean pre-commit docs-install docs-serve docs-build
 
 PYTHON ?= python3
 
@@ -9,9 +9,12 @@ help:
 	@echo "  make dev-install   Install editable with dev deps (recommended)"
 	@echo "  make lint          Run ruff check"
 	@echo "  make format        Run ruff format (writes files)"
+	@echo "  make format-check  Run ruff format --check (CI; no writes)"
+	@echo "  make ruff-pin      Fail if local ruff is outside pyproject pin (>=0.15.0,<0.16)"
 	@echo "  make typecheck     Run mypy"
 	@echo "  make test          Run pytest"
 	@echo "  make cov           Run pytest with coverage report"
+	@echo "  make ci            Local CI gate: ruff pin + lint + format-check + typecheck + cov"
 	@echo "  make build         Build sdist + wheel"
 	@echo "  make clean         Remove build artifacts, caches, egg-info"
 	@echo "  make pre-commit    Install and run pre-commit hooks on all files"
@@ -32,6 +35,14 @@ lint:
 format:
 	$(PYTHON) -m ruff format .
 
+format-check:
+	$(PYTHON) -m ruff format --check .
+
+# CI installs ruff from pyproject [dev]: >=0.15.0,<0.16. A newer local ruff
+# (e.g. 0.16.x) will format files GitHub Actions then rejects.
+ruff-pin:
+	@$(PYTHON) -c "from importlib.metadata import version; v=version('ruff'); maj,minor=map(int,v.split('.')[:2]); assert (maj, minor)==(0, 15), 'ruff %s is outside CI pin >=0.15.0,<0.16 — pip install \"ruff>=0.15.0,<0.16\"' % v"
+
 typecheck:
 	$(PYTHON) -m mypy src/grok_build_cli_utilities --ignore-missing-imports
 
@@ -40,6 +51,8 @@ test:
 
 cov:
 	$(PYTHON) -m pytest -q --cov=src/grok_build_cli_utilities --cov-report=term-missing
+
+ci: ruff-pin lint format-check typecheck cov
 
 build:
 	$(PYTHON) -m build

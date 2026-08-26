@@ -11,13 +11,21 @@ pip install -e ".[dev]"
 ## Quality gates (CI runs exactly these)
 
 ```bash
-make lint
-make format          # or run lint after edits
-make typecheck
-make cov             # or make test
+make ci
 ```
 
-Or simply `make test`.
+`make ci` is the local GitHub Actions `test` job: ruff pin (`>=0.15.0,<0.16`), `ruff check`, `ruff format --check`, mypy, pytest with coverage.
+
+CI fails on `ruff format --check` **before** pytest. If format-check fails:
+
+```bash
+make format
+make ci
+```
+
+Do not format with ruff 0.16+; CI installs the pyproject pin and will disagree.
+
+If you touch `docs/`, also `make docs-build`.
 
 See the [Makefile](https://github.com/cobusgreyling/grok-build-cli-utilities/blob/main/Makefile) for all targets.
 
@@ -57,7 +65,7 @@ make pre-commit
 - New commands or major features need tests.
 - Prefer real (but safe) filesystem operations over heavy mocking when possible.
 - `--dry-run` paths and JSON output are especially important to cover.
-- Run the full `make cov` locally before opening a PR.
+- Run `make ci` locally before opening a PR.
 
 ## How to propose changes
 
