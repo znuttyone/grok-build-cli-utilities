@@ -23,8 +23,8 @@ def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert (
-        "0.3.1" in result.output
-    )  # 0.3.1 includes tomllib, shared toml, safe helpers, coverage/tests, CI/docs polish etc.
+        "0.4.0" in result.output
+    )  # 0.4.0: token-accurate usage cost, list$/est$, plan-advisor, FAQ
 
 
 def test_sessions_help():
@@ -201,7 +201,11 @@ def test_usage_report_json_and_spark(tmp_path: Path):
                 }
             )
         )
-    result = runner.invoke(app, ["-g", str(grok), "usage", "report", "--json", "--top", "1"])
+    # Legacy session-summary JSON (sessions/messages) is --by project without --tokens.
+    # Default --by app uses the token path and needs turn_completed.usage.
+    result = runner.invoke(
+        app, ["-g", str(grok), "usage", "report", "--by", "project", "--json", "--top", "1"]
+    )
     assert result.exit_code == 0
     assert "sessions" in result.output and "messages" in result.output
 
@@ -423,9 +427,12 @@ def test_usage_cost_and_config_get(tmp_path: Path):
         )
     )
 
-    r = runner.invoke(app, ["-g", str(grok), "usage", "cost", "--by", "model", "--json"])
+    # Default token mode with no turn usage exits cleanly; rough mode still works
+    r = runner.invoke(
+        app, ["-g", str(grok), "usage", "cost", "--mode", "rough", "--by", "model", "--json"]
+    )
     assert r.exit_code == 0
-    assert "estimated_total_usd" in r.output or "Est." in r.output  # rough
+    assert "estimated_total_usd" in r.output or "rough" in r.output
 
     # config get (uses parsers load)
     (grok / "config.toml").write_text('[foo]\nbar = "baz"\n')

@@ -23,7 +23,7 @@ A powerful, batteries-included collection of command-line tools that make you dr
 - Scriptable with `--json`
 - Zero-config — just works
 
-**New in 0.3.1**: shared robust TOML loader (tomllib on 3.11+, tomli, improved naive), safe FS/JSON helpers, reduced broad exception handling, more tests + coverage, CI on macOS + build verification, `__main__` support, CODE_OF_CONDUCT, docs/CI polish, and bug fixes (e.g. plugin discovery).
+**New in 0.4.0+**: token-accurate `usage cost` / `usage report` with **list$ + path/regime est$**, **`--plan-advisor`**, wallet snapshot, open-ended dates, FAQ (`usage info`).
 
 **Sole author & maintainer:** Cobus Greyling
 
@@ -124,21 +124,20 @@ grok-utils backup restore ... --no-dry-run --force
 - Core state always included: config, skills, user-settings, memory, plugins, etc.
 - Restore is dry-run by default. Extremely safe.
 
-### 4. `usage` — Stunning analytics & productivity insights
+### 4. `usage` — Analytics & cost awareness
 
 ```bash
-grok-utils usage report --by project --top 8
-grok-utils usage report --by model --since 2026-05-01
+grok-utils usage report --by app --from 2026-08-01          # list$/est$ (default)
+grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6 -P
+grok-utils auth status                                       # Extra Credits + weekly %
 grok-utils usage top-projects
-grok-utils usage models
 grok-utils usage timeline --days 21
 ```
 
-- Grouped reports with visual share bars (`████░░░░`)
-- Unicode sparklines for recent activity
-- Daily timeline
-- Model distribution
-- JSON output for feeding into other tools or dashboards
+- Token-accurate **list$** + path/regime **est$** (auth mix)
+- Plan-advisor: Pure API vs SuperGrok vs Heavy
+- Wallet footer / `auth status` snapshot
+- Share bars, sparklines, JSON
 
 ### 5. `mcp` — MCP server superpowers
 
@@ -187,7 +186,11 @@ grok-utils hooks create PostToolUse my-audit
 grok-utils config show
 grok-utils config paths
 grok-utils logs tail --level error -n 20
-grok-utils usage cost --by model
+grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app --api-estimate
+grok-utils usage cost --invoice-usd 180 --fixed-usd 30 --by app
+grok-utils usage report --by app --from 2026-08-01
+# list$/est$ by day (here --tokens is required):
+# grok-utils usage report --by day --tokens --from 2026-08-01
 grok-utils sessions export <id> --format html -o out.html
 grok-utils sessions analyze <id>
 ```
@@ -247,7 +250,7 @@ Real terminal output is best experienced live (`grok-utils usage report`, `sessi
 - Rewind-preview / stronger diff (analyze covers some signals/rewinds).
 
 ### Analytics & cost
-- Cost estimation + pricing in `usage` (model price table, `usage report --cost`, `usage cost --by project`). "Cost estimation using real model pricing".
+- Cost estimation from real turn tokens + pure-API rates; optional SuperGrok invoice allocation; multi-ledger labeling (api$ ≠ SuperGrok ≠ console paygo).
 - Deeper `sessions analyze <id>` (or `info --deep --full`) using `signals.json`, `plan.json`, compaction history, error rates, subagent trees, rewind stats.
 
 ### Session power tools

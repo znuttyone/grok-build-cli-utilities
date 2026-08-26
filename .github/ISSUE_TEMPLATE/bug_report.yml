@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: grok-utils version
-      placeholder: "0.3.1"
+      placeholder: "0.4.0"
       description: "Run `grok-utils --version`"
     validations:
       required: true

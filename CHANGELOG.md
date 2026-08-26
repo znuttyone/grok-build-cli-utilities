@@ -4,6 +4,50 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Weekly pool reset** on `auth status` / cost footer / JSON (`weekly_resets_at`): `currentPeriod.end` from the same billing log line Build `/usage` uses (local clock matches “Resets: August 27, 19:08”). Fallback `billingPeriodEnd`.
+- **SuperGrok vs Heavy from billing log** (`ctx.subscriptionTier` on `billing: fetched credits config`). Cost mix/wallet/auth status/`-P` label **Heavy pool** vs SuperGrok; planner footer marks the **current plan** and treats the other subscription row as a what-if. Session `/usage` turns do not store the plan.
+- **grok-4.6 list-rate profile** (`-m grok-4.6` / `4.6` / `grok-4.6-build`): $2 / $0.50 / $6 per 1M (≤200k).
+- **`grok-utils auth status`**: SuperGrok session vs API key; optional `--history`; **Extra Credits $** + **weekly %** from billing log.
+- Auth path + wallet snapshot on `usage cost` footer / JSON (`prepaid_balance_usd`, `weekly_usage_pct`).
+- **Path/regime cash scales**: API 1.0, SuperGrok pool 0.0, overage 1.9; weekly% unknown → list$ scale + caveat.
+- **`--topoff-discount` 0..1** optional pin for est_cash$; **`-P` always ranks** offered pack promos **−20/−25/−40%** in the plan table (no flag required) + single ★ best plan for the window.
+- Plan-advisor accuracy: est$ mix **% sum to 100**; tops **ceil to pack size** (`topoff_pack_usd`, default 100); promo dependency in ★ banner; week list$ pace check; notes separate pool context from $/mo formula.
+- Wallet labels (credits **remaining**, weekly limit **% used**); SuperGrok (?) footnote; **`--detail`** gates savings attribution, 1.9× source, hybrid tip, week pace, per-app regime; JSON: `wallet`, `plan_advisor.candidates/best` (Heavy promo rows + `active` pin for `--topoff-discount`), `week_list_usd`, `list_pct`, per-bucket `regime_list_pct`.
+- `est_cash$` = est$ × (1 − discount) when promo modeled; primary plan “best fit” stays full price.
+
+### Fixed
+- **est$ jumped as `unified.jsonl` grew / truncated**: weekly-timeline compaction moved plateau timestamps forward, so same-week Heavy/SuperGrok pool turns fell *before* the first remaining billing sample and were billed at list$ (`SuperGrok (?)` ×1). Compaction now keeps the earliest timestamp of each weekly-% plateau. Turns before the first sample reuse that sample when it is still in-pool and within 7 days (and label Heavy when the log only ever shows Heavy). First-sample overage still stays unknown @ list$ so historical Extra Credits burn is not zeroed.
+
+### Changed
+- **list$** uses Build **`costUsdTicks ÷ 10^10`** (xAI cost tracking — same $ as `/usage` Session Cost). Pass `-m` to reconstruct from a published rate table instead. Tick conversion was previously ÷1e9 (10× too high).
+- **list$ default rate table** (fallback / `-m`) is **grok-4.6** ($2 / $0.50 / $6 per 1M, ≤200k; verified 2026-08-13). Reconstruction does not double-count reasoning already inside `outputTokens`. Pin older 4.5 cache rate with `-m grok-4.5` ($2 / $0.30 / $6). `grok-4.6*` no longer fuzzy-matches grok-4 ($3 / $15).
+- Default est$ is path/regime-aware (not a single 0.57 blend). Multi-day blends remain optional via `--cash-scale` / prepaid-fit.
+- Top-off discount clamp is **0..1** (was 0..0.95) so free-credit scenarios work.
+- **`usage cost` human output simplified**: compact TOTALS / est$ mix / wallet line; plan-advisor collapses duplicate Pure API rows; **`--detail` / `-v`** adds promo table + overage one-liner only (long caveats → `usage info`).
+- **`usage report` token path** aligned with cost: auth-mix est$, **Share(list$)**, compact wallet/footer (no empty Share bars when SuperGrok pool scale is 0).
+- **Refactor**: shared `build_token_cost_window` for cost + report; one-pass per-key est$; single billing log parse (`load_billing_snapshot`); FAQ moved to `usage_faq.py`; display helpers in `usage_display.py`; legacy report/rough → `usage_legacy.py`.
+- **`usage report` default `--by app`** (short names + list$/est$). SuperGrok est$ mix splits pool / overage / unknown regimes.
+- **Doctor** Auth path row includes Extra Credits $ + weekly % when billing log has them.
+
+## [0.4.0] - 2026-08-06
+
+### Added
+- Token-accurate `usage cost` from `turn_completed.usage` in `updates.jsonl` (input/output/cached/reasoning, deduped by prompt_id).
+- Pure-API rate table (`utils/pricing.py`); **`--rates-model` / `-m`** (default **grok-4.5**).
+- **list$ + est$** on `usage cost` and token-based `usage report` (`est$` = list$ × cash_scale, default **0.57**).
+- Optional `--prepaid-usd` / `--credits-remaining`, `--cash-scale`, toml `[usage] cash_scale`.
+- **`--plan-advisor` / `-P`**: pure API vs SuperGrok vs SuperGrok Heavy (run-rate → monthly; soft “if intensity holds”).
+- Optional SuperGrok/cash allocation: `--invoice-usd` / `--fixed-usd` by `costUsdTicks`.
+- Date span in report/cost titles; warn when `--from`/`--to` extend past session data; JSON `result_from` / `result_to`.
+- Novice **FAQ** in `usage info` + `docs/commands/usage.md` (Session Cost vs list$/est$, Credits, Weekly limit, Auto topup).
+- Tests: `tests/test_usage_tokens.py`.
+
+### Changed
+- **`usage cost` default** uses real turn tokens (not message×400). Legacy: `--mode rough`.
+- Help: clear metavars / “Requires amount” for value options; examples for open-ended `--from` and invoice/prepaid.
+- Docs: Phase 1 maintain defaults when xAI announces changes; future Models API list-rate refresh notes (not in v1 network path).
+
 ## [0.3.1] - 2026-06-03
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

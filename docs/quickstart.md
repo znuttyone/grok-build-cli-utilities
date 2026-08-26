@@ -83,16 +83,22 @@ Backups always include a SHA-256 manifest.
 ### 6. Usage analytics & cost awareness
 
 ```bash
-grok-utils usage report --by project --top 8
-grok-utils usage report --by model --since 2026-05-01
+grok-utils usage report --by project --top 8   # legacy: sessions/messages
+grok-utils usage report --by app --from 2026-08-01 -m grok-4.6   # list$/est$ (short names)
+grok-utils usage report --by day --tokens --from 2026-08-01      # list$/est$ by day
 
 grok-utils usage top-projects
 grok-utils usage models
 grok-utils usage timeline --days 30
 
-# Rough cost estimates (proxy using message counts + static pricing)
-grok-utils usage cost --by model
-grok-utils usage cost --by project
+# Token-accurate cost: list$ + path/regime est$
+grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.6
+grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
+grok-utils usage cost --from 2026-07-18 --by app -m grok-4.6 --plan-advisor
+grok-utils usage cost --from 2026-08-01 --by app --api-estimate
+grok-utils usage cost --by app --invoice-usd 180 --fixed-usd 30
+grok-utils usage info   # FAQ, ledgers, plan-advisor knobs
+grok-utils auth status  # Extra Credits $ · weekly % · auth path
 ```
 
 ### 7. MCP, plugins, hooks, config
