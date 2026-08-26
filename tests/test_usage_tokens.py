@@ -1059,9 +1059,7 @@ def test_usage_cost_detects_heavy_from_billing_log(tmp_path: Path):
     assert "current plan" in out
     assert "what-if" in out
     assert "Plan from billing log: SuperGrok Heavy" in out
-    reset = format_weekly_reset_local(
-        datetime(2026, 8, 20, 23, 8, 1, tzinfo=timezone.utc)
-    )
+    reset = format_weekly_reset_local(datetime(2026, 8, 20, 23, 8, 1, tzinfo=timezone.utc))
     assert reset is not None
     reset_lines = [
         ln for ln in out.splitlines() if reset in ln and "Weekly Heavy pool resets" in ln

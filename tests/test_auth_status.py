@@ -379,16 +379,12 @@ def test_auth_status_cli_shows_weekly_reset(tmp_path: Path):
 
     human = runner.invoke(app, ["--grok-home", str(grok), "auth", "status"])
     assert human.exit_code == 0, human.output
-    reset = format_weekly_reset_local(
-        datetime(2026, 8, 27, 23, 8, 1, 959078, tzinfo=timezone.utc)
-    )
+    reset = format_weekly_reset_local(datetime(2026, 8, 27, 23, 8, 1, 959078, tzinfo=timezone.utc))
     assert reset is not None
     assert "Weekly Heavy pool resets:" in human.output
     assert reset in human.output
     reset_lines = [
-        ln
-        for ln in human.output.splitlines()
-        if "Weekly Heavy pool resets:" in ln and reset in ln
+        ln for ln in human.output.splitlines() if "Weekly Heavy pool resets:" in ln and reset in ln
     ]
     assert len(reset_lines) == 1
     assert "Extra Credits" not in reset_lines[0]
