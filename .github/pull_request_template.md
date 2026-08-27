@@ -6,9 +6,7 @@
 - 
 
 ## Testing
-- [ ] `ruff check . && ruff format --check .`
-- [ ] `mypy src/grok_build_cli_utilities --ignore-missing-imports`
-- [ ] `pytest -q --cov=src/grok_build_cli_utilities --cov-report=term-missing`
+- [ ] `make ci` (ruff pin + check + format --check + mypy + pytest cov)
 - [ ] Manual test with real `~/.grok` (or `--grok-home`) + `--dry-run` paths
 - [ ] Added/updated tests for new behavior
 

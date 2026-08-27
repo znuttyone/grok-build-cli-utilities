@@ -18,25 +18,32 @@ python -m pip install -e ".[dev]"
 
 ## Quality Bar (required before any PR)
 
-Run these and ensure they pass:
+CI fails on `ruff format --check` **before** pytest. Passing tests alone is not enough.
 
 ```bash
-make lint
-make typecheck
-make cov
-# or: make test
+make ci
 ```
 
-See the Makefile for the full list of convenient targets. The GitHub Actions CI runs equivalent checks.
+That is the local equivalent of the GitHub Actions `test` job:
 
-The GitHub Actions CI runs the exact same checks on every push and PR (Python 3.10–3.12).
+1. ruff version pin (`>=0.15.0,<0.16` from `pyproject.toml` `dev` extra)
+2. `ruff check .`
+3. `ruff format --check .`
+4. mypy
+5. pytest with coverage
+
+If format-check fails, run `make format` and then `make ci` again. Do **not** format with ruff 0.16+; CI installs the pin above and will disagree.
+
+If you touch `docs/`, also run `make docs-build`.
+
+See the Makefile for the full list of convenient targets. The GitHub Actions CI runs these checks on every push and PR (Python 3.10–3.12).
 
 ## Testing
 
 - All new code must be accompanied by tests.
 - Use `tmp_path` (pytest) + `--grok-home` overrides or monkeypatching for filesystem-dependent commands.
 - Prefer testing the happy path + the security/error paths (e.g. bad tar members, invalid skills, prune dry-run).
-- Run the full suite locally before pushing.
+- Run `make ci` locally before pushing.
 
 ## Commit Style
 
