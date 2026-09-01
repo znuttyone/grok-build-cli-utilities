@@ -272,11 +272,18 @@ def make_table(
     *,
     no_wrap: tuple[str, ...] | list[str] = (),
 ) -> Table:
-    t = Table(title=title, show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
     pinned = set(no_wrap)
+    t = Table(
+        title=title,
+        show_header=True,
+        header_style="bold cyan",
+        box=None,
+        padding=(0, 1),
+        expand=bool(pinned),
+    )
     for c in columns:
         if c in pinned:
-            t.add_column(c, no_wrap=True, overflow="ellipsis")
+            t.add_column(c, no_wrap=True, overflow="ellipsis", ratio=1)
         else:
             t.add_column(c)
     return t

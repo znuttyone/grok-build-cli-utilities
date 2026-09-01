@@ -84,12 +84,15 @@ def test_make_table_key_ellipsis_no_phantom_row():
     t.add_row("ProfitGuard #7,8,14 · grok-build-cli-utilities #15", "2", "16.4M")
     t.add_row("Blessed-Bits#22 · 01a05e3c…", "1", "1.0M")
     buf = StringIO()
-    Console(file=buf, width=40, force_terminal=True, color_system=None).print(t)
+    # height is required: Rich 15 ignores width alone when TERM is dumb (local).
+    Console(file=buf, width=40, height=24, force_terminal=True, color_system=None).print(t)
     lines = [ln.rstrip() for ln in buf.getvalue().splitlines() if ln.strip()]
     data = [ln for ln in lines if "16.4M" in ln or "1.0M" in ln]
     assert len(data) == 2
+    assert all(len(ln) <= 40 for ln in lines)
     blob = "\n".join(lines)
     assert "ProfitGuard#14" not in blob
+    assert "grok-build-cli-utilities #15" not in blob
     assert t.columns[0].no_wrap is True
     assert t.columns[0].overflow == "ellipsis"
 

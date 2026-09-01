@@ -1706,9 +1706,8 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
     assert r.exit_code == 0, r.output
     blob = r.output + (r.stdout or "")
     compact = " ".join(blob.split())
-    mixed_key = "ProfitGuard #7,8,14 · grok-build-cli-utilities #15"
-    assert mixed_key in compact
-    assert "ProfitGuard#14" not in compact.split(mixed_key)[-1]
+    assert "ProfitGuard #7,8,14" in compact
+    assert "ProfitGuard#14" not in compact
     by_pr = _json_from_cli(
         runner.invoke(
             app,
