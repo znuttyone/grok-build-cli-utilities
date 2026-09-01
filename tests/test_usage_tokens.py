@@ -1518,7 +1518,8 @@ def test_usage_cost_by_pr_does_not_split_multi(tmp_path: Path):
         "znuttyone/ProfitGuard#72",
     ]
     expect = pr_group_key(sid, by_sess["buckets"][0]["prs"])
-    assert expect == "01a059cb… (PRs 70,72)"
+    assert expect == "znuttyone/ProfitGuard\u00a0#70,72"
+    assert "01a059cb" not in expect
     assert len(by_pr["buckets"]) == 1
     assert by_pr["buckets"][0]["key"] == expect
     assert abs(by_pr["totals"]["list_usd"] - by_sess["totals"]["list_usd"]) < 1e-9
@@ -1575,3 +1576,72 @@ def test_usage_cost_by_pr_include_unlabeled(tmp_path: Path):
     keys = {b["key"] for b in data["buckets"]}
     assert "znuttyone/VCI#3" in keys
     assert "unlab" in keys
+
+
+def test_pr_group_key_prefers_issue_and_drops_uuid():
+    from grok_build_cli_utilities.utils.usage_tokens import CreatedPr, pr_group_key
+
+    one = CreatedPr("znuttyone", "ProfitGuard", pr=83, issue=81)
+    assert pr_group_key("01a059cb-dead", [one]) == "znuttyone/ProfitGuard#81→#83"
+    same_repo = [
+        CreatedPr("znuttyone", "ProfitGuard", pr=70, issue=69),
+        CreatedPr("znuttyone", "ProfitGuard", pr=72, issue=71),
+    ]
+    assert pr_group_key("01a059cb-dead", same_repo) == "znuttyone/ProfitGuard\u00a0#69,71"
+    mixed = [
+        CreatedPr("znuttyone", "ProfitGuard", pr=83, issue=81),
+        CreatedPr("znuttyone", "Blessed-Bits", pr=23, issue=None),
+        CreatedPr("cobusgreyling", "grok-build-cli-utilities", pr=15, issue=None),
+    ]
+    assert (
+        pr_group_key("01a05e3c-dead", mixed)
+        == "Blessed-Bits#23, grok-build-cli-utilities#15, ProfitGuard#81"
+    )
+
+
+def test_usage_cost_by_pr_uses_fixes_issue(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    sess = grok / "sessions" / "ProfitGuard" / "s1"
+    upd = sess / "updates.jsonl"
+    _write_turn(
+        upd,
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=1000,
+    )
+    _append_update(
+        upd,
+        _mcp_create_pr_update(
+            session_id="s1",
+            number=83,
+            body="Fixes #81\n\nAlso mentions https://github.com/znuttyone/ProfitGuard/pull/58",
+        ),
+    )
+    _append_update(upd, _mcp_get_pr_update(session_id="s1", number=58))
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-01",
+            "--to",
+            "2026-08-05",
+            "--by",
+            "pr",
+            "--json",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    data = _json_from_cli(r)
+    assert data["buckets"][0]["key"] == "znuttyone/ProfitGuard#81→#83"
+    assert data["buckets"][0]["prs"] == ["znuttyone/ProfitGuard#81"]
+    blob = json.dumps(data)
+    assert "#58" not in blob
+    assert "01a0" not in data["buckets"][0]["key"]

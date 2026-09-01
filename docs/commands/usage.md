@@ -151,8 +151,9 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 
 `--by pr` attributes cost only from successful github `create_pull_request` tool output or `gh pr create` stdout (`https://github.com/owner/repo/pull/N`). It does not scrape chat text or `get_pull_request`.
 
-- One created PR: the whole session list$ goes to `owner/repo#N`.
-- Two or more: one row such as `01a059cb… (PRs 70,72,75)`. Tokens are not split.
+- One created PR: the whole session list$ goes to `owner/repo#N` (issue from `Fixes #N` when present).
+- Two or more, same repo: one row such as `znuttyone/ProfitGuard #69,#71,#73`. Tokens are not split. No session id in the key.
+- Mixed repos: `ProfitGuard#81, Blessed-Bits#23, grok-build-cli-utilities#15`.
 - Zero created PRs: omitted unless `--include-unlabeled`.
 
 ### Plan advisor (`--plan-advisor` / `-P`)

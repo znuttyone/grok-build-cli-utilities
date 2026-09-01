@@ -34,6 +34,12 @@ _GH_PULL_URL = re.compile(
     r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)\b",
     re.IGNORECASE,
 )
+# GitHub closing keywords only. Do not treat prose "#58" as an issue.
+_ISSUE_KW = re.compile(
+    r"(?i)\b(?:fix(?:ed|es)?|close[sd]?|resolve[sd]?)\s*:?\s+"
+    r"(?:https://github\.com/[^/\s]+/[^/\s]+/issues/|(?:[\w.-]+/[\w.-]+)?#)"
+    r"(\d+)\b"
+)
 
 
 @dataclass
@@ -174,14 +180,83 @@ def project_from_path(updates_path: Path) -> tuple[str, str]:
     return short, cwd
 
 
-def sorted_pr_labels(labels: Iterable[str]) -> list[str]:
-    def sort_key(s: str) -> tuple[str, int, str]:
-        left, sep, num = s.rpartition("#")
-        if sep and num.isdigit():
-            return (left, int(num), s)
-        return (s, 0, s)
+@dataclass(frozen=True)
+class CreatedPr:
+    """One github create_pull_request / gh pr create success."""
 
-    return sorted(set(labels), key=sort_key)
+    owner: str
+    repo: str
+    pr: int
+    issue: int | None = None
+
+    @property
+    def display_num(self) -> int:
+        return int(self.issue) if self.issue is not None else int(self.pr)
+
+    @property
+    def identity(self) -> str:
+        if self.owner and self.repo:
+            return f"{self.owner}/{self.repo}#{int(self.pr)}"
+        return f"#{int(self.pr)}"
+
+    @property
+    def label(self) -> str:
+        """Human id: owner/repo#issue when Fixes is present, else owner/repo#PR."""
+        n = self.display_num
+        if self.owner and self.repo:
+            return f"{self.owner}/{self.repo}#{n}"
+        if self.repo:
+            return f"{self.repo}#{n}"
+        return f"#{n}"
+
+    @property
+    def short_label(self) -> str:
+        n = self.display_num
+        if self.repo:
+            return f"{self.repo}#{n}"
+        return self.label
+
+
+def _issue_from_text(*texts: str) -> int | None:
+    for t in texts:
+        if not t:
+            continue
+        m = _ISSUE_KW.search(t)
+        if m:
+            n = int(m.group(1))
+            if n > 0:
+                return n
+    return None
+
+
+def created_pr_from_label(s: str) -> CreatedPr:
+    text = str(s or "").strip()
+    left, sep, num = text.rpartition("#")
+    pr = int(num) if sep and num.isdigit() else 0
+    owner, repo = "", left
+    if "/" in left:
+        owner, repo = left.split("/", 1)
+    return CreatedPr(owner=owner, repo=repo, pr=pr or 0, issue=None)
+
+
+def _as_created_prs(prs: Iterable[CreatedPr | str]) -> list[CreatedPr]:
+    out: list[CreatedPr] = []
+    seen: set[str] = set()
+    for item in prs:
+        p = item if isinstance(item, CreatedPr) else created_pr_from_label(str(item))
+        if p.pr <= 0 and p.display_num <= 0:
+            continue
+        ident = p.identity
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(p)
+    out.sort(key=lambda p: (p.repo.lower(), p.owner.lower(), p.display_num, p.pr))
+    return out
+
+
+def sorted_pr_labels(labels: Iterable[CreatedPr | str]) -> list[str]:
+    return [p.label for p in _as_created_prs(labels)]
 
 
 def short_session_id(session_id: str, *, n: int = 8) -> str:
@@ -190,34 +265,35 @@ def short_session_id(session_id: str, *, n: int = 8) -> str:
     return session_id[:n] + "…"
 
 
-def pr_group_key(session_id: str, prs: Iterable[str]) -> str | None:
-    """1:1 PR label, or one multi-PR session row. None if this session created no PR."""
-    labels = sorted_pr_labels(prs)
-    if not labels:
+def pr_group_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str | None:
+    """Table/JSON key for --by pr. Repo and issue first. Never a session UUID."""
+    created = _as_created_prs(prs)
+    if not created:
         return None
-    if len(labels) == 1:
-        return labels[0]
-    repos = {lab.rpartition("#")[0] for lab in labels}
+    if len(created) == 1:
+        p = created[0]
+        if p.issue is not None and p.issue != p.pr:
+            return f"{p.label}→#{p.pr}"
+        return p.label
+    repos = {(p.owner, p.repo) for p in created}
+    nums = ",".join(str(p.display_num) for p in created)
     if len(repos) == 1:
-        nums = ",".join(lab.rpartition("#")[2] for lab in labels)
-    else:
-        nums = ",".join(labels)
-    return f"{short_session_id(session_id)} (PRs {nums})"
+        p0 = created[0]
+        head = f"{p0.owner}/{p0.repo}" if p0.owner and p0.repo else (p0.repo or "repo")
+        return f"{head}\u00a0#{nums}"
+    return ", ".join(p.short_label for p in created)
 
 
-def session_display_key(session_id: str, prs: Iterable[str]) -> str:
-    """session_id plus created-PR labels for the cost table."""
-    labels = sorted_pr_labels(prs)
-    if not labels:
+def session_display_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str:
+    """Labels first, short session id last."""
+    created = _as_created_prs(prs)
+    if not created:
         return session_id
-    if len(labels) == 1:
-        return f"{session_id}  {labels[0]}"
-    repos = {lab.rpartition("#")[0] for lab in labels}
-    if len(repos) == 1:
-        nums = ",".join(lab.rpartition("#")[2] for lab in labels)
-    else:
-        nums = ",".join(labels)
-    return f"{session_id}  (PRs {nums})"
+    short = short_session_id(session_id)
+    head = pr_group_key(session_id, created)
+    if not head:
+        return session_id
+    return f"{head}  {short}"
 
 
 def _bare_tool_name(name: str) -> str:
@@ -255,13 +331,7 @@ def _as_text(value: object) -> str:
     return str(value)
 
 
-def _pr_label(owner: str, repo: str, number: int) -> str:
-    if owner and repo:
-        return f"{owner}/{repo}#{int(number)}"
-    return f"#{int(number)}"
-
-
-def _pr_from_github_object(obj: dict) -> str | None:
+def _pr_from_github_object(obj: dict) -> CreatedPr | None:
     """Top-level GitHub PR JSON only (body text cites other PRs)."""
     number = obj.get("number")
     html_raw = obj.get("html_url")
@@ -285,10 +355,13 @@ def _pr_from_github_object(obj: dict) -> str | None:
         return None
     if n <= 0:
         return None
-    return _pr_label(owner, repo, n)
+    title = obj.get("title") if isinstance(obj.get("title"), str) else ""
+    body = obj.get("body") if isinstance(obj.get("body"), str) else ""
+    issue = _issue_from_text(str(body or ""), str(title or ""))
+    return CreatedPr(owner=owner, repo=repo, pr=n, issue=issue)
 
 
-def _pr_from_create_payload(blob: object) -> str | None:
+def _pr_from_create_payload(blob: object) -> CreatedPr | None:
     if isinstance(blob, dict):
         if "OkayOutput" in blob:
             return _pr_from_create_payload(blob.get("OkayOutput"))
@@ -350,19 +423,19 @@ def _bash_stdout(raw: object) -> str:
     return "\n".join(parts)
 
 
-def _labels_from_gh_stdout(stdout: str) -> list[str]:
-    found: list[str] = []
+def _prs_from_gh_stdout(stdout: str) -> list[CreatedPr]:
+    found: list[CreatedPr] = []
     seen: set[str] = set()
     for m in _GH_PULL_URL.finditer(stdout or ""):
-        label = _pr_label(m.group(1), m.group(2), int(m.group(3)))
-        if label not in seen:
-            seen.add(label)
-            found.append(label)
+        p = CreatedPr(owner=m.group(1), repo=m.group(2), pr=int(m.group(3)))
+        if p.identity not in seen:
+            seen.add(p.identity)
+            found.append(p)
     return found
 
 
-def pr_labels_from_update(update: dict) -> list[str]:
-    """PR labels from a completed create_pull_request or ``gh pr create`` update."""
+def pr_creates_from_update(update: dict) -> list[CreatedPr]:
+    """Created PRs from a completed create_pull_request or ``gh pr create`` update."""
     if not isinstance(update, dict):
         return []
     if update.get("sessionUpdate") != "tool_call_update":
@@ -378,19 +451,29 @@ def pr_labels_from_update(update: dict) -> list[str]:
             payload = raw.get("output", raw)
         else:
             payload = raw
-        label = _pr_from_create_payload(payload)
-        return [label] if label else []
+        pr = _pr_from_create_payload(payload)
+        return [pr] if pr else []
     if bare and bare != "create_pull_request":
         if "gh pr create" not in _bash_command(update):
             return []
     cmd = _bash_command(update)
     if "gh pr create" in cmd:
-        return _labels_from_gh_stdout(_bash_stdout(raw))
+        created = _prs_from_gh_stdout(_bash_stdout(raw))
+        issue = _issue_from_text(cmd)
+        if issue is not None and len(created) == 1:
+            p = created[0]
+            created = [CreatedPr(owner=p.owner, repo=p.repo, pr=p.pr, issue=issue)]
+        return created
     if isinstance(raw, str) and "create_pull_request_review" not in raw:
         if "create_pull_request" in raw or "OkayOutput" in raw:
-            label = _pr_from_create_payload(raw)
-            return [label] if label else []
+            pr = _pr_from_create_payload(raw)
+            return [pr] if pr else []
     return []
+
+
+def pr_labels_from_update(update: dict) -> list[str]:
+    """Display labels from a completed create_pull_request or ``gh pr create`` update."""
+    return [p.label for p in pr_creates_from_update(update)]
 
 
 def scan_pr_creates(updates_path: Path) -> set[str]:
@@ -415,19 +498,22 @@ def scan_pr_creates(updates_path: Path) -> set[str]:
     return found
 
 
-def _remember_pr_labels(
-    dest: dict[str, set[str]],
+def _remember_prs(
+    dest: dict[str, dict[str, CreatedPr]],
     session_ids: Iterable[str],
-    labels: Iterable[str],
+    prs: Iterable[CreatedPr],
 ) -> None:
-    labs = [x for x in labels if x]
-    if not labs:
+    created = [p for p in prs if p.pr > 0]
+    if not created:
         return
     for sid in session_ids:
         if not sid:
             continue
-        bucket = dest.setdefault(sid, set())
-        bucket.update(labs)
+        bucket = dest.setdefault(sid, {})
+        for p in created:
+            prev = bucket.get(p.identity)
+            if prev is None or (prev.issue is None and p.issue is not None):
+                bucket[p.identity] = p
 
 
 def _primary_model_from_usage(usage: dict) -> str:
@@ -458,12 +544,13 @@ def load_turn_usage(
     sessions_dir: Path,
     *,
     progress: Progress | None = None,
-    prs_by_session: dict[str, set[str]] | None = None,
+    prs_by_session: dict[str, dict[str, CreatedPr]] | None = None,
 ) -> list[UsageRec]:
     """Load and dedupe turn_completed usage events from all sessions.
 
-    When ``prs_by_session`` is passed, fill it with PR labels created in each
-    session (github ``create_pull_request`` / ``gh pr create`` only).
+    When ``prs_by_session`` is passed, fill it with created PRs per session
+    (github ``create_pull_request`` / ``gh pr create`` only). Inner map is
+    identity (owner/repo#PR) -> CreatedPr.
     """
     paths = list(iter_turn_usage_files(sessions_dir))
     task = None
@@ -495,10 +582,10 @@ def load_turn_usage(
                 params = obj.get("params") or {}
                 update = params.get("update") or {}
                 if prs is not None:
-                    labels = pr_labels_from_update(update)
-                    if labels:
+                    created = pr_creates_from_update(update)
+                    if created:
                         sid = str(params.get("sessionId") or session_fallback)
-                        _remember_pr_labels(prs, (sid, session_fallback), labels)
+                        _remember_prs(prs, (sid, session_fallback), created)
                 if update.get("sessionUpdate") != "turn_completed":
                     continue
                 usage = update.get("usage")
@@ -565,7 +652,7 @@ def bucket_key(
     r: UsageRec,
     group: str,
     *,
-    prs_by_session: Mapping[str, Iterable[str]] | None = None,
+    prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
 ) -> str | None:
     if group in ("app", "project"):
@@ -583,8 +670,8 @@ def bucket_key(
     if group == "session":
         return r.session_id or "unknown"
     if group == "pr":
-        labels = sorted_pr_labels((prs_by_session or {}).get(r.session_id, ()))
-        key = pr_group_key(r.session_id or "unknown", labels)
+        created = _as_created_prs((prs_by_session or {}).get(r.session_id, ()))
+        key = pr_group_key(r.session_id or "unknown", created)
         if key is None and include_unlabeled:
             return r.session_id or "unknown"
         return key
@@ -597,7 +684,7 @@ def aggregate(
     records: list[UsageRec],
     group: str,
     *,
-    prs_by_session: Mapping[str, Iterable[str]] | None = None,
+    prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
 ) -> list[UsageBucket]:
     m: dict[str, UsageBucket] = {}

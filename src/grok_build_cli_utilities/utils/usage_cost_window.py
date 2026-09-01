@@ -31,6 +31,7 @@ from .pricing import (
     resolve_topoff_discount,
 )
 from .usage_tokens import (
+    CreatedPr,
     UsageBucket,
     UsageRec,
     aggregate,
@@ -103,7 +104,7 @@ def build_token_cost_window(
     data_latest: date | None = None,
     result_earliest: date | None = None,
     result_latest: date | None = None,
-    prs_by_session: Mapping[str, Iterable[str]] | None = None,
+    prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
 ) -> TokenCostWindow:
     """Build list$/est$ for filtered records (shared by cost + report)."""

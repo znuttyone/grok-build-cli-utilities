@@ -44,6 +44,7 @@ from ..utils.usage_faq import COST_CAVEATS_LONG
 from ..utils.usage_tokens import (
     COST_GROUPS,
     TOKEN_REPORT_GROUPS,
+    CreatedPr,
     UsageRec,
     allocate_invoice,
     filter_usage,
@@ -111,7 +112,7 @@ def _load_filtered_usage(
     date | None,
     date | None,
     date | None,
-    dict[str, set[str]],
+    dict[str, list[CreatedPr]],
 ]:
     """Load turns, apply filters, warn if CLI range extends past available data.
 
@@ -125,9 +126,10 @@ def _load_filtered_usage(
 
     sessions_dir = get_sessions_dir(grok_home)
     # Progress on stderr so --json stdout stays pure
-    prs_by_session: dict[str, set[str]] = {}
+    prs_raw: dict[str, dict[str, CreatedPr]] = {}
     with Progress(console=RichConsole(file=sys.stderr), transient=True) as progress:
-        records = load_turn_usage(sessions_dir, progress=progress, prs_by_session=prs_by_session)
+        records = load_turn_usage(sessions_dir, progress=progress, prs_by_session=prs_raw)
+    prs_by_session = {sid: list(found.values()) for sid, found in prs_raw.items()}
 
     d_from = None
     d_to = None
@@ -180,7 +182,7 @@ def _load_filtered_usage(
 def _records_for_group(
     records: list[UsageRec],
     group: str,
-    prs_by_session: dict[str, set[str]],
+    prs_by_session: dict[str, list[CreatedPr]],
     *,
     include_unlabeled: bool,
 ) -> list[UsageRec]:
@@ -190,29 +192,28 @@ def _records_for_group(
     return [r for r in records if r.session_id in labeled]
 
 
-def _prs_for_bucket(key: str, group: str, prs_by_session: dict[str, set[str]]) -> list[str]:
+def _prs_for_bucket(key: str, group: str, prs_by_session: dict[str, list[CreatedPr]]) -> list[str]:
     if group == "session":
         return sorted_pr_labels(prs_by_session.get(key, ()))
     if group != "pr":
         return []
-    if " (PRs " not in key and "#" in key:
-        return [key]
-    for sid, labels in prs_by_session.items():
-        ordered = sorted_pr_labels(labels)
-        if key == sid or pr_group_key(sid, ordered) == key:
-            return ordered
+    for sid, created in prs_by_session.items():
+        if pr_group_key(sid, created) == key:
+            return sorted_pr_labels(created)
+        if key == sid:
+            return sorted_pr_labels(created)
     return []
 
 
 def _display_bucket_key(
     key: str,
     group: str,
-    prs_by_session: dict[str, set[str]],
+    prs_by_session: dict[str, list[CreatedPr]],
     *,
     width: int,
 ) -> str:
     shown = session_display_key(key, prs_by_session.get(key, ())) if group == "session" else key
-    if len(shown) <= width:
+    if width <= 0 or len(shown) <= width:
         return shown
     return shown[:width] + "…"
 
@@ -389,7 +390,12 @@ def report(
         for b in win.buckets[:top]:
             list_b = win.list_for_key(b.key)
             est_b = win.est_for_key(b.key)
-            key = _display_bucket_key(b.key, group, prs_by_session, width=56)
+            key = _display_bucket_key(
+                b.key,
+                group,
+                prs_by_session,
+                width=0 if group in ("session", "pr") else 56,
+            )
             t.add_row(
                 key,
                 str(b.n),
@@ -531,9 +537,10 @@ def cost_report(
         metavar="KEY",
         help=(
             "Group cost by: app | project | model | day | week | month | session | pr. "
-            "session = session_id (PR labels when the session created PRs). "
-            "pr = 1:1 session→PR maps all list$ to owner/repo#N; "
-            "multi-PR sessions stay one row (not split); "
+            "session = labels first, short session id last. "
+            "pr = owner/repo#issue (Fixes #N) or owner/repo#PR; "
+            "several PRs stay one row (owner/repo #69,#71), never split; "
+            "no session UUID in the pr key; "
             "sessions with no created PR are omitted unless --include-unlabeled"
         ),
     ),
@@ -962,7 +969,9 @@ def cost_report(
     for b in buckets[:top]:
         list_b = win.list_for_key(b.key)
         est_b = win.est_for_key(b.key)
-        key = _display_bucket_key(b.key, by, prs_by_session, width=56)
+        key = _display_bucket_key(
+            b.key, by, prs_by_session, width=0 if by in ("session", "pr") else 56
+        )
         cells: list[str] = [
             key,
             str(b.n),
