@@ -177,7 +177,26 @@ Put `Fixes` or `Closes` in the create body so the Key includes the issue number.
 
 Grok worktrees under `~/.grok/worktrees` and `*-issue-N` clones pretty-print as their own `--by app` Keys. They are not merged into the parent clone Key.
 
-Same-repo example: `widgets #12,15`. Mixed: `widgets #7,8,14 · notes #15`. Issue clone: `notes-issue-9` becomes `notes#9`. Collision: `notes#22 · 01a05e3c…`.
+Issue clone: `notes-issue-9` becomes `notes#9`. Collision: `notes#22 · 01a05e3c…`.
+
+Example from `grok-utils usage cost --from 2026-09-01 --by pr`:
+
+```text
+               Estimated Cost by pr (list$ primary · est$=path scale) · 2026-09-01 → 2026-09-01
+ Key                                      Prm  Tokens  Cache%  list$  est$  Share(list$)
+ widgets #69,71,73,74,77,79,81,84         44   86.8M   97.2%   24.26  0.00  ████████████
+ notes #9,22,25                           7    30.6M   90.6%   4.62   0.00  ██░░░░░░░░░░
+ widgets #7,8,14 · notes #15              2    16.4M   95.9%   2.46   0.00  █░░░░░░░░░░░
+ notes#27→#28                             1    1.5M    93.0%   0.17   0.00  ░░░░░░░░░░░░
+
+TOTALS  prompts=54  tokens=135.3M  cache=95.5%  list$=$31.51  est$=$0.00
+```
+
+What each row means:
+
+- `widgets #69,71,…` and `notes #9,22,25`. One Grok Build session created several PRs in one repo. Tokens are not split. You do not get per-PR cost unless each PR is its own session with cwd in that repo.
+- `widgets #7,8,14 · notes #15`. One session, two repos, still unsplit. Compact Key. `#14` is part of that cell, not its own row.
+- `notes#27→#28`. 1:1. Create body had `Fixes #27`, PR 28. That session's list$ is the PR. This is the PR-level view.
 
 ### Plan advisor (`--plan-advisor` / `-P`)
 
