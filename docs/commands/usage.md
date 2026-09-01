@@ -31,6 +31,8 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 | Goal | Use |
 |---|---|
 | Which app/day used the most? | `usage cost --by app` or `--by day` → **list$** |
+| Which Grok Build session? | `usage cost --by session` → **list$** (PR labels when that session created PRs) |
+| Which GitHub PR (1:1 session only)? | `usage cost --by pr` → **list$**. Multi-PR sessions stay one row. No GitHub API. |
 | Extra-credit burn estimate | **est$** (regime-aware) or re-fit with `--prepaid-usd` + `--credits-remaining` |
 | “How heavy was this session?” | Build **Session Cost** |
 | “How much is left / weekly pool?” | `auth status` or cost footer wallet snapshot |
@@ -40,6 +42,8 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 ```bash
 # Typical day-to-day
 grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
+grok-utils usage cost --from 2026-08-01 --by session
+grok-utils usage cost --from 2026-08-01 --by pr
 
 # Plan comparison (compact; soft recommendation if run-rate continues)
 grok-utils usage cost --from 2026-07-18 --by app -m grok-4.6 -P
@@ -70,6 +74,12 @@ grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.6
 
 # From a date through latest session data (omit --to; title shows … for open end)
 grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
+
+# Per session (session_id). Created PRs are labels, not extra buckets.
+grok-utils usage cost --from 2026-08-01 --by session
+
+# Per GitHub PR when native logs map 1:1. Multi-PR sessions are not split.
+grok-utils usage cost --from 2026-08-01 --by pr
 
 # Fit est$ to wallet burn for a window (one-shot recalibration)
 # e.g. start ~$10 + tops $60 − remaining $21.40 → --prepaid-usd 70 --credits-remaining 21.40
@@ -126,7 +136,8 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 | Flag | Meaning |
 |---|---|
 | `--from` / `--to` / `--since` | Inclusive dates; omit `--to` for through **latest** session data (`--since` = `--from`). If `--from` is earlier than any turn in the logs, a warning shows the real earliest date (table title uses the data span). |
-| `--by` | `app` \| `project` \| `model` \| `day` \| `week` \| `month` |
+| `--by` | `app` \| `project` \| `model` \| `day` \| `week` \| `month` \| `session` \| `pr` |
+| `--include-unlabeled` | With `--by pr`, also list sessions that never created a PR (keyed by session id). Default omit. |
 | `-m` / `--rates-model` | Force a reconstructed rate table for **list$** (ignores ticks). Omit to use `/usage` Session Cost (`costUsdTicks÷1e10`). Fallback table: `grok-4.6` |
 | `--cash-scale` | Force uniform list$ → est$ scale (else path/regime defaults) |
 | `--prepaid-usd` / `--credits-remaining` | Set scale from wallet burn |
@@ -135,6 +146,14 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 | `--plan-advisor` / `-P` | Compact plan comparison (one Pure API row when scale=1) |
 | `--detail` / `-v` | Richer est$ mix + promo table + overage one-liner (FAQ still via `usage info`) |
 | `--json` | Machine-readable (`prepaid_balance_usd`, `weekly_usage_pct`, `weekly_resets_at`, …) |
+
+`--by session` buckets on the Grok Build `sessionId`. Created PRs are labels on that row.
+
+`--by pr` attributes cost only from successful github `create_pull_request` tool output or `gh pr create` stdout (`https://github.com/owner/repo/pull/N`). It does not scrape chat text or `get_pull_request`.
+
+- One created PR: the whole session list$ goes to `owner/repo#N`.
+- Two or more: one row such as `01a059cb… (PRs 70,72,75)`. Tokens are not split.
+- Zero created PRs: omitted unless `--include-unlabeled`.
 
 ### Plan advisor (`--plan-advisor` / `-P`)
 
@@ -217,6 +236,7 @@ A later opt-in command (e.g. `usage rates-refresh`) could fetch these, cache the
 | How you invoke | Path |
 |---|---|
 | `--by app` (default) | Short names · **always** list$/est$ · **`--tokens` redundant** |
+| `--by session` / `pr` | Same token path as `--by app` (`--tokens` redundant) |
 | `--by project` | Full cwd paths; need **`--tokens`** for list$/est$ (else legacy messages) |
 | `--by model` / `day` **without** `--tokens` | Legacy session-summary report (no list$/est$) |
 | `--by model` / `day` **with** `--tokens` | Token path (list$/est$) |

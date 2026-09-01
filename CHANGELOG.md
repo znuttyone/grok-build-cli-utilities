@@ -5,6 +5,8 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **`usage cost --by session`**: one row per Grok Build `sessionId`. Created PRs (github `create_pull_request` / `gh pr create` stdout in `updates.jsonl`) are labels on the row.
+- **`usage cost --by pr`**: when a session created exactly one PR, all of that session's list$ goes to `owner/repo#N`. Two or more PRs stay one unsplit row (`01a059cb… (PRs 70,72,…)`). Sessions with no created PR are omitted unless `--include-unlabeled`. Chat text and `get_pull_request` are ignored.
 - **Weekly pool reset** on `auth status` / cost footer / JSON (`weekly_resets_at`): `currentPeriod.end` from the same billing log line Build `/usage` uses (local clock matches “Resets: August 27, 19:08”). Fallback `billingPeriodEnd`.
 - **SuperGrok vs Heavy from billing log** (`ctx.subscriptionTier` on `billing: fetched credits config`). Cost mix/wallet/auth status/`-P` label **Heavy pool** vs SuperGrok; planner footer marks the **current plan** and treats the other subscription row as a what-if. Session `/usage` turns do not store the plan.
 - **grok-4.6 list-rate profile** (`-m grok-4.6` / `4.6` / `grok-4.6-build`): $2 / $0.50 / $6 per 1M (≤200k).

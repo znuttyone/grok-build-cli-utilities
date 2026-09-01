@@ -42,12 +42,17 @@ from ..utils.usage_display import (
 )
 from ..utils.usage_faq import COST_CAVEATS_LONG
 from ..utils.usage_tokens import (
+    COST_GROUPS,
+    TOKEN_REPORT_GROUPS,
     UsageRec,
     allocate_invoice,
     filter_usage,
     list_price_usd,
     load_turn_usage,
     parse_iso_date,
+    pr_group_key,
+    session_display_key,
+    sorted_pr_labels,
 )
 from .usage_legacy import print_cost_rough, print_legacy_session_report
 
@@ -100,11 +105,19 @@ def _load_filtered_usage(
     date_from: str | None,
     date_to: str | None,
     apps: list[str] | None,
-) -> tuple[list[UsageRec], date | None, date | None, date | None, date | None]:
+) -> tuple[
+    list[UsageRec],
+    date | None,
+    date | None,
+    date | None,
+    date | None,
+    dict[str, set[str]],
+]:
     """Load turns, apply filters, warn if CLI range extends past available data.
 
-    Returns (filtered, d_from, d_to, data_earliest, data_latest) where data_* are
-    the min/max dates in session logs (app-filtered, before date window).
+    Returns (filtered, d_from, d_to, data_earliest, data_latest, prs_by_session)
+    where data_* are the min/max dates in session logs (app-filtered, before
+    date window).
     """
     import sys
 
@@ -112,8 +125,9 @@ def _load_filtered_usage(
 
     sessions_dir = get_sessions_dir(grok_home)
     # Progress on stderr so --json stdout stays pure
+    prs_by_session: dict[str, set[str]] = {}
     with Progress(console=RichConsole(file=sys.stderr), transient=True) as progress:
-        records = load_turn_usage(sessions_dir, progress=progress)
+        records = load_turn_usage(sessions_dir, progress=progress, prs_by_session=prs_by_session)
 
     d_from = None
     d_to = None
@@ -160,7 +174,47 @@ def _load_filtered_usage(
         )
 
     filtered = filter_usage(records, date_from=d_from, date_to=d_to, apps=apps)
-    return filtered, d_from, d_to, earliest, latest
+    return filtered, d_from, d_to, earliest, latest, prs_by_session
+
+
+def _records_for_group(
+    records: list[UsageRec],
+    group: str,
+    prs_by_session: dict[str, set[str]],
+    *,
+    include_unlabeled: bool,
+) -> list[UsageRec]:
+    if group != "pr" or include_unlabeled:
+        return records
+    labeled = {sid for sid, prs in prs_by_session.items() if prs}
+    return [r for r in records if r.session_id in labeled]
+
+
+def _prs_for_bucket(key: str, group: str, prs_by_session: dict[str, set[str]]) -> list[str]:
+    if group == "session":
+        return sorted_pr_labels(prs_by_session.get(key, ()))
+    if group != "pr":
+        return []
+    if " (PRs " not in key and "#" in key:
+        return [key]
+    for sid, labels in prs_by_session.items():
+        ordered = sorted_pr_labels(labels)
+        if key == sid or pr_group_key(sid, ordered) == key:
+            return ordered
+    return []
+
+
+def _display_bucket_key(
+    key: str,
+    group: str,
+    prs_by_session: dict[str, set[str]],
+    *,
+    width: int,
+) -> str:
+    shown = session_display_key(key, prs_by_session.get(key, ())) if group == "session" else key
+    if len(shown) <= width:
+        return shown
+    return shown[:width] + "…"
 
 
 @app.command("report")
@@ -178,8 +232,8 @@ def report(
         "--by",
         help=(
             "Group by: app (short name, default, list$/est$) | project (full cwd, "
-            "list$/est$ with --tokens) | model | day. "
-            "--tokens required for project/model/day; ignored with --by app"
+            "list$/est$ with --tokens) | model | day | session | pr. "
+            "--tokens required for project/model/day; ignored with --by app|session|pr"
         ),
     ),
     top: int = typer.Option(10, "--top", help="Show top N"),
@@ -188,8 +242,8 @@ def report(
         "--tokens",
         help=(
             "Use turn-level tokens + list$/est$ (same as usage cost). "
-            "Redundant with --by app (already on). Needed for --by project|model|day "
-            "to leave the legacy session-summary path"
+            "Redundant with --by app|session|pr (already on). Needed for "
+            "--by project|model|day to leave the legacy session-summary path"
         ),
     ),
     rates_model: str | None = typer.Option(
@@ -216,27 +270,29 @@ def report(
     """Generate a rich usage report.
 
     Token path (list$ + est$, same path/regime + auth mix as usage cost):
-      · always when --by app
+      · always when --by app | session | pr
       · also when --tokens (for --by project | model | day)
     Without --tokens, --by project|model|day uses the legacy session-summary path
     (message counts, not list$/est$). Share bars use list$ on the token path.
     """
     grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
 
-    # --by app implies token path; --tokens is only meaningful for other --by values
-    if tokens and by == "app":
+    # --by app|session|pr implies token path; --tokens is only meaningful otherwise
+    if tokens and by in ("app", "session", "pr"):
         warn(
-            "--tokens is ignored with --by app (token path / list$/est$ is already on). "
+            "--tokens is ignored with --by app|session|pr "
+            "(token path / list$/est$ is already on). "
             "Use --tokens when grouping by project, model, or day, e.g.\n"
             "  grok-utils usage report --by day --tokens --from 2026-08-01"
         )
-    use_tokens = bool(tokens) or by == "app"
+    use_tokens = bool(tokens) or by in ("app", "session", "pr")
 
     if use_tokens:
-        group = by if by in ("app", "project", "model", "day") else "app"
-        records, d_from, d_to, data_earliest, data_latest = _load_filtered_usage(
+        group = by if by in TOKEN_REPORT_GROUPS else "app"
+        records, d_from, d_to, data_earliest, data_latest, prs_by_session = _load_filtered_usage(
             grok_home, since=since, date_from=date_from, date_to=date_to, apps=None
         )
+        records = _records_for_group(records, group, prs_by_session, include_unlabeled=False)
         if not records:
             warn("No turn usage data for report (try without --tokens for summary-based report).")
             return
@@ -253,6 +309,7 @@ def report(
             data_latest=data_latest,
             result_earliest=result_earliest,
             result_latest=result_latest,
+            prs_by_session=prs_by_session,
         )
 
         if json_out:
@@ -265,6 +322,9 @@ def report(
                 row["list_usd"] = round(list_b, 4)
                 row["api_est_usd"] = round(list_b, 4)
                 row["est_usd"] = round(win.est_for_key(b.key), 4)
+                prs = _prs_for_bucket(b.key, group, prs_by_session)
+                if prs:
+                    row["prs"] = prs
                 top_rows.append(row)
 
             print(
@@ -329,7 +389,7 @@ def report(
         for b in win.buckets[:top]:
             list_b = win.list_for_key(b.key)
             est_b = win.est_for_key(b.key)
-            key = b.key[:44] + ("…" if len(b.key) > 44 else "")
+            key = _display_bucket_key(b.key, group, prs_by_session, width=56)
             t.add_row(
                 key,
                 str(b.n),
@@ -469,7 +529,13 @@ def cost_report(
         "app",
         "--by",
         metavar="KEY",
-        help="Group cost by: app | project | model | day | week | month",
+        help=(
+            "Group cost by: app | project | model | day | week | month | session | pr. "
+            "session = session_id (PR labels when the session created PRs). "
+            "pr = 1:1 session→PR maps all list$ to owner/repo#N; "
+            "multi-PR sessions stay one row (not split); "
+            "sessions with no created PR are omitted unless --include-unlabeled"
+        ),
     ),
     top: int = typer.Option(8, "--top", metavar="N", help="Show top N buckets"),
     mode: str = typer.Option(
@@ -577,6 +643,14 @@ def cost_report(
         help="Requires substring: filter by app/project (repeatable, e.g. --app VCI)",
     ),
     json_out: bool = typer.Option(False, "--json", help="Flag (no value): machine-readable JSON"),
+    include_unlabeled: bool = typer.Option(
+        False,
+        "--include-unlabeled",
+        help=(
+            "Flag (no value): with --by pr, also show sessions that never created a PR "
+            "(keyed by session id). Default omit."
+        ),
+    ),
 ) -> None:
     """Token-accurate cost: list$ (API list rates) + est$ (path/regime spend lens).
 
@@ -591,6 +665,12 @@ def cost_report(
 
       # Closed window
       grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app
+
+      # Per Grok Build session (PR labels when create_pull_request / gh pr create ran)
+      grok-utils usage cost --from 2026-08-01 --by session
+
+      # Per GitHub PR when the session created exactly one; multi-PR sessions stay one row
+      grok-utils usage cost --from 2026-08-01 --by pr
 
       # From a date through latest session data (omit --to)
       grok-utils usage cost --from 2026-08-01 --by app
@@ -623,17 +703,28 @@ def cost_report(
         )
         return
 
-    if by not in ("app", "project", "model", "day", "week", "month", "none"):
+    if by not in COST_GROUPS:
         warn(f"Unknown --by {by}; using app")
         by = "app"
+    if include_unlabeled and by != "pr":
+        warn("--include-unlabeled only applies to --by pr; ignoring")
+        include_unlabeled = False
 
-    records, d_from, d_to, data_earliest, data_latest = _load_filtered_usage(
+    records, d_from, d_to, data_earliest, data_latest, prs_by_session = _load_filtered_usage(
         grok_home, since=since, date_from=date_from, date_to=date_to, apps=app
     )
+    had_turns = bool(records)
+    records = _records_for_group(records, by, prs_by_session, include_unlabeled=include_unlabeled)
 
     if not records:
-        warn("No turn usage records (no turn_completed usage in updates.jsonl).")
-        warn("Tip: try --mode rough for legacy summary-based estimate, or check --from/--to.")
+        if by == "pr" and had_turns:
+            warn(
+                "No created PRs in this window (no github create_pull_request / "
+                "gh pr create). Try --by session or --include-unlabeled."
+            )
+        else:
+            warn("No turn usage records (no turn_completed usage in updates.jsonl).")
+            warn("Tip: try --mode rough for legacy summary-based estimate, or check --from/--to.")
         return
 
     result_earliest, result_latest = _data_date_span(records)
@@ -652,6 +743,8 @@ def cost_report(
         data_latest=data_latest,
         result_earliest=result_earliest,
         result_latest=result_latest,
+        prs_by_session=prs_by_session,
+        include_unlabeled=include_unlabeled,
     )
     rates = win.rates
     rates_label = win.rates_label
@@ -738,6 +831,9 @@ def cost_report(
                 row["total_usd"] = round(var + fixed_per, 4)
             if list_price:
                 row["list_price_usd"] = round(list_price_usd(b.ticks), 4)
+            prs = _prs_for_bucket(b.key, by, prs_by_session)
+            if prs:
+                row["prs"] = prs
             top_rows.append(row)
 
         weeks = week_list_series(records, rates, prefer_ticks=win.prefer_ticks)
@@ -832,6 +928,8 @@ def cost_report(
                 "plan_advisor_pure_api_uses_api_scale_not_table_scale",
                 "topoff_discount_is_card_promo_not_list$",
                 "pass_-m_to_force_reconstructed_rate_table",
+                "session_prs_from_create_pull_request_or_gh_pr_create_only",
+                "pr_group_is_1to1_or_unsplit_multi",
             ],
         }
         print(json.dumps(payload, indent=2))
@@ -864,7 +962,7 @@ def cost_report(
     for b in buckets[:top]:
         list_b = win.list_for_key(b.key)
         est_b = win.est_for_key(b.key)
-        key = b.key[:40] + ("…" if len(b.key) > 40 else "")
+        key = _display_bucket_key(b.key, by, prs_by_session, width=56)
         cells: list[str] = [
             key,
             str(b.n),

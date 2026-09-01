@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import re
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -17,6 +18,22 @@ from .pricing import TokenRates, api_estimate_usd, rates_for_model
 TICKS_PER_USD = 10_000_000_000
 # Prompt ≥ this many tokens bills the whole request at 2× list rates.
 LONG_CONTEXT_PROMPT_TOKENS = 200_000
+COST_GROUPS = (
+    "app",
+    "project",
+    "model",
+    "day",
+    "week",
+    "month",
+    "session",
+    "pr",
+    "none",
+)
+TOKEN_REPORT_GROUPS = ("app", "project", "model", "day", "session", "pr")
+_GH_PULL_URL = re.compile(
+    r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -157,6 +174,262 @@ def project_from_path(updates_path: Path) -> tuple[str, str]:
     return short, cwd
 
 
+def sorted_pr_labels(labels: Iterable[str]) -> list[str]:
+    def sort_key(s: str) -> tuple[str, int, str]:
+        left, sep, num = s.rpartition("#")
+        if sep and num.isdigit():
+            return (left, int(num), s)
+        return (s, 0, s)
+
+    return sorted(set(labels), key=sort_key)
+
+
+def short_session_id(session_id: str, *, n: int = 8) -> str:
+    if len(session_id) <= n:
+        return session_id
+    return session_id[:n] + "…"
+
+
+def pr_group_key(session_id: str, prs: Iterable[str]) -> str | None:
+    """1:1 PR label, or one multi-PR session row. None if this session created no PR."""
+    labels = sorted_pr_labels(prs)
+    if not labels:
+        return None
+    if len(labels) == 1:
+        return labels[0]
+    repos = {lab.rpartition("#")[0] for lab in labels}
+    if len(repos) == 1:
+        nums = ",".join(lab.rpartition("#")[2] for lab in labels)
+    else:
+        nums = ",".join(labels)
+    return f"{short_session_id(session_id)} (PRs {nums})"
+
+
+def session_display_key(session_id: str, prs: Iterable[str]) -> str:
+    """session_id plus created-PR labels for the cost table."""
+    labels = sorted_pr_labels(prs)
+    if not labels:
+        return session_id
+    if len(labels) == 1:
+        return f"{session_id}  {labels[0]}"
+    repos = {lab.rpartition("#")[0] for lab in labels}
+    if len(repos) == 1:
+        nums = ",".join(lab.rpartition("#")[2] for lab in labels)
+    else:
+        nums = ",".join(labels)
+    return f"{session_id}  (PRs {nums})"
+
+
+def _bare_tool_name(name: str) -> str:
+    n = str(name or "").strip()
+    if n.startswith("github__"):
+        return n[len("github__") :]
+    return n
+
+
+def _as_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, list):
+        if value and all(isinstance(x, int) for x in value[:4]):
+            try:
+                return bytes(value).decode("utf-8", errors="replace")
+            except (TypeError, ValueError):
+                pass
+        return "\n".join(_as_text(x) for x in value)
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for k in ("OkayOutput", "output_for_prompt", "output", "content"):
+            if k in value:
+                parts.append(_as_text(value[k]))
+        if parts:
+            return "\n".join(parts)
+        try:
+            return json.dumps(value)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _pr_label(owner: str, repo: str, number: int) -> str:
+    if owner and repo:
+        return f"{owner}/{repo}#{int(number)}"
+    return f"#{int(number)}"
+
+
+def _pr_from_github_object(obj: dict) -> str | None:
+    """Top-level GitHub PR JSON only (body text cites other PRs)."""
+    number = obj.get("number")
+    html_raw = obj.get("html_url")
+    html = html_raw if isinstance(html_raw, str) else ""
+    owner, repo = "", ""
+    m = _GH_PULL_URL.search(html)
+    if m:
+        owner, repo = m.group(1), m.group(2)
+        if number is None:
+            number = int(m.group(3))
+    if number is None:
+        url_raw = obj.get("url")
+        api = url_raw if isinstance(url_raw, str) else ""
+        am = re.search(r"/repos/([^/]+)/([^/]+)/pulls/(\d+)\b", api)
+        if am:
+            owner, repo = owner or am.group(1), repo or am.group(2)
+            number = int(am.group(3))
+    try:
+        n = int(number)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return _pr_label(owner, repo, n)
+
+
+def _pr_from_create_payload(blob: object) -> str | None:
+    if isinstance(blob, dict):
+        if "OkayOutput" in blob:
+            return _pr_from_create_payload(blob.get("OkayOutput"))
+        if "number" in blob or "html_url" in blob:
+            return _pr_from_github_object(blob)
+        inner = blob.get("output") if isinstance(blob.get("output"), (dict, str)) else None
+        if inner is not None:
+            return _pr_from_create_payload(inner)
+        return None
+    if not isinstance(blob, str) or not blob.strip():
+        return None
+    text = blob.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict):
+        return _pr_from_create_payload(data)
+    return None
+
+
+def _mcp_tool_name(update: dict) -> str:
+    raw = update.get("rawOutput")
+    if isinstance(raw, dict):
+        name = str(raw.get("tool_name") or "")
+        if name:
+            return name
+    title = str(update.get("title") or "")
+    if title:
+        return title
+    raw_in = update.get("rawInput")
+    if isinstance(raw_in, dict):
+        return str(raw_in.get("tool_name") or "")
+    return ""
+
+
+def _bash_command(update: dict) -> str:
+    raw = update.get("rawOutput")
+    if isinstance(raw, dict):
+        cmd = raw.get("command")
+        if isinstance(cmd, str) and cmd:
+            return cmd
+    raw_in = update.get("rawInput")
+    if isinstance(raw_in, dict):
+        cmd = raw_in.get("command")
+        if isinstance(cmd, str) and cmd:
+            return cmd
+    title = str(update.get("title") or "")
+    return title
+
+
+def _bash_stdout(raw: object) -> str:
+    if not isinstance(raw, dict):
+        return _as_text(raw)
+    parts: list[str] = []
+    for k in ("output_for_prompt", "output"):
+        if k in raw:
+            parts.append(_as_text(raw[k]))
+    return "\n".join(parts)
+
+
+def _labels_from_gh_stdout(stdout: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for m in _GH_PULL_URL.finditer(stdout or ""):
+        label = _pr_label(m.group(1), m.group(2), int(m.group(3)))
+        if label not in seen:
+            seen.add(label)
+            found.append(label)
+    return found
+
+
+def pr_labels_from_update(update: dict) -> list[str]:
+    """PR labels from a completed create_pull_request or ``gh pr create`` update."""
+    if not isinstance(update, dict):
+        return []
+    if update.get("sessionUpdate") != "tool_call_update":
+        return []
+    status = update.get("status")
+    if status not in (None, "", "completed"):
+        return []
+    raw = update.get("rawOutput")
+    bare = _bare_tool_name(_mcp_tool_name(update))
+    if bare == "create_pull_request":
+        payload: object
+        if isinstance(raw, dict):
+            payload = raw.get("output", raw)
+        else:
+            payload = raw
+        label = _pr_from_create_payload(payload)
+        return [label] if label else []
+    if bare and bare != "create_pull_request":
+        if "gh pr create" not in _bash_command(update):
+            return []
+    cmd = _bash_command(update)
+    if "gh pr create" in cmd:
+        return _labels_from_gh_stdout(_bash_stdout(raw))
+    if isinstance(raw, str) and "create_pull_request_review" not in raw:
+        if "create_pull_request" in raw or "OkayOutput" in raw:
+            label = _pr_from_create_payload(raw)
+            return [label] if label else []
+    return []
+
+
+def scan_pr_creates(updates_path: Path) -> set[str]:
+    """Created PR labels in one updates.jsonl (create_pull_request / gh pr create only)."""
+    found: set[str] = set()
+    try:
+        f = updates_path.open("r", encoding="utf-8", errors="ignore")
+    except OSError:
+        return found
+    with f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            params = obj.get("params") or {}
+            update = params.get("update") or {}
+            found.update(pr_labels_from_update(update))
+    return found
+
+
+def _remember_pr_labels(
+    dest: dict[str, set[str]],
+    session_ids: Iterable[str],
+    labels: Iterable[str],
+) -> None:
+    labs = [x for x in labels if x]
+    if not labs:
+        return
+    for sid in session_ids:
+        if not sid:
+            continue
+        bucket = dest.setdefault(sid, set())
+        bucket.update(labs)
+
+
 def _primary_model_from_usage(usage: dict) -> str:
     mu = usage.get("modelUsage")
     if isinstance(mu, dict) and mu:
@@ -185,14 +458,20 @@ def load_turn_usage(
     sessions_dir: Path,
     *,
     progress: Progress | None = None,
+    prs_by_session: dict[str, set[str]] | None = None,
 ) -> list[UsageRec]:
-    """Load and dedupe turn_completed usage events from all sessions."""
+    """Load and dedupe turn_completed usage events from all sessions.
+
+    When ``prs_by_session`` is passed, fill it with PR labels created in each
+    session (github ``create_pull_request`` / ``gh pr create`` only).
+    """
     paths = list(iter_turn_usage_files(sessions_dir))
     task = None
     if progress and paths:
         task = progress.add_task("Scanning turn usage...", total=len(paths))
 
     by_prompt: dict[str, UsageRec] = {}
+    prs = prs_by_session
     for path in paths:
         project, cwd = project_from_path(path)
         session_fallback = path.parent.name
@@ -215,6 +494,11 @@ def load_turn_usage(
                     continue
                 params = obj.get("params") or {}
                 update = params.get("update") or {}
+                if prs is not None:
+                    labels = pr_labels_from_update(update)
+                    if labels:
+                        sid = str(params.get("sessionId") or session_fallback)
+                        _remember_pr_labels(prs, (sid, session_fallback), labels)
                 if update.get("sessionUpdate") != "turn_completed":
                     continue
                 usage = update.get("usage")
@@ -277,7 +561,13 @@ def filter_usage(
     return out
 
 
-def bucket_key(r: UsageRec, group: str) -> str:
+def bucket_key(
+    r: UsageRec,
+    group: str,
+    *,
+    prs_by_session: Mapping[str, Iterable[str]] | None = None,
+    include_unlabeled: bool = False,
+) -> str | None:
     if group in ("app", "project"):
         # app = short folder name; project = full cwd (disambiguates same name in different paths)
         return r.project if group == "app" else (r.cwd or r.project)
@@ -290,15 +580,36 @@ def bucket_key(r: UsageRec, group: str) -> str:
         return f"{iso.year}-W{iso.week:02d}"
     if group == "month":
         return f"{r.ts.year}-{r.ts.month:02d}"
+    if group == "session":
+        return r.session_id or "unknown"
+    if group == "pr":
+        labels = sorted_pr_labels((prs_by_session or {}).get(r.session_id, ()))
+        key = pr_group_key(r.session_id or "unknown", labels)
+        if key is None and include_unlabeled:
+            return r.session_id or "unknown"
+        return key
     if group == "none":
         return "all"
     raise ValueError(f"Unknown group: {group}")
 
 
-def aggregate(records: list[UsageRec], group: str) -> list[UsageBucket]:
+def aggregate(
+    records: list[UsageRec],
+    group: str,
+    *,
+    prs_by_session: Mapping[str, Iterable[str]] | None = None,
+    include_unlabeled: bool = False,
+) -> list[UsageBucket]:
     m: dict[str, UsageBucket] = {}
     for r in records:
-        k = bucket_key(r, group)
+        k = bucket_key(
+            r,
+            group,
+            prs_by_session=prs_by_session,
+            include_unlabeled=include_unlabeled,
+        )
+        if k is None:
+            continue
         if k not in m:
             m[k] = UsageBucket(key=k)
         m[k].add(r)

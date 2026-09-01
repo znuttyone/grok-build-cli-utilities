@@ -32,6 +32,9 @@ from grok_build_cli_utilities.utils.usage_tokens import (
     allocate_paygo_by_type,
     filter_usage,
     load_turn_usage,
+    pr_group_key,
+    pr_labels_from_update,
+    scan_pr_creates,
     total_bucket,
 )
 
@@ -95,6 +98,74 @@ def _write_turn(
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(obj) + "\n")
+
+
+def _append_update(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(obj) + "\n")
+
+
+def _mcp_create_pr_update(
+    *,
+    session_id: str,
+    number: int,
+    owner: str = "znuttyone",
+    repo: str = "ProfitGuard",
+    body: str = "",
+    ts: str = "2026-08-02T12:05:00Z",
+) -> dict:
+    html = f"https://github.com/{owner}/{repo}/pull/{number}"
+    ok = {
+        "url": f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}",
+        "html_url": html,
+        "number": number,
+        "title": f"pr {number}",
+        "body": body,
+        "user": {"html_url": f"https://github.com/{owner}"},
+    }
+    return {
+        "method": "session/update",
+        "timestamp": ts,
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": f"call-create-{number}",
+                "status": "completed",
+                "rawOutput": {
+                    "type": "MCP",
+                    "tool_name": "create_pull_request",
+                    "server_name": "github",
+                    "output": {"OkayOutput": json.dumps(ok)},
+                },
+            },
+        },
+    }
+
+
+def _mcp_get_pr_update(*, session_id: str, number: int) -> dict:
+    html = f"https://github.com/znuttyone/ProfitGuard/pull/{number}"
+    ok = {"html_url": html, "number": number, "title": f"dependabot {number}"}
+    return {
+        "method": "session/update",
+        "timestamp": "2026-08-02T12:06:00Z",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": f"call-get-{number}",
+                "status": "completed",
+                "title": "github__get_pull_request",
+                "rawOutput": {
+                    "type": "MCP",
+                    "tool_name": "get_pull_request",
+                    "server_name": "github",
+                    "output": {"OkayOutput": json.dumps(ok)},
+                },
+            },
+        },
+    }
 
 
 def test_list_price_usd_matches_xai_ticks():
@@ -1230,3 +1301,277 @@ def test_usage_cost_default_uses_ticks(tmp_path: Path):
     d_m = _json_from_cli(r_m)
     assert d_m["list_source"] == "rates"
     assert abs(d_m["totals"]["list_usd"] - 0.50) < 1e-6
+
+
+def test_scan_pr_creates_mcp_and_ignores_get_and_prose(tmp_path: Path):
+    sess = tmp_path / "sessions" / "App" / "s1"
+    upd = sess / "updates.jsonl"
+    _write_turn(
+        upd,
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=1000,
+    )
+    _append_update(
+        upd,
+        _mcp_create_pr_update(
+            session_id="s1",
+            number=85,
+            body="mentions https://github.com/znuttyone/ProfitGuard/pull/70 in the body",
+        ),
+    )
+    _append_update(upd, _mcp_get_pr_update(session_id="s1", number=58))
+    _append_update(
+        upd,
+        {
+            "method": "session/update",
+            "timestamp": "2026-08-02T12:07:00Z",
+            "params": {
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {
+                        "type": "text",
+                        "text": "Dependabot #58 https://github.com/znuttyone/ProfitGuard/pull/58",
+                    },
+                },
+            },
+        },
+    )
+    labels = scan_pr_creates(upd)
+    assert labels == {"znuttyone/ProfitGuard#85"}
+    assert "58" not in "".join(labels)
+    assert "70" not in "".join(labels)
+
+
+def test_pr_labels_from_string_raw_output():
+    ok = json.dumps(
+        {
+            "number": 85,
+            "html_url": "https://github.com/znuttyone/ProfitGuard/pull/85",
+        }
+    )
+    blob = json.dumps({"tool_name": "create_pull_request", "OkayOutput": ok})
+    labels = pr_labels_from_update(
+        {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "rawOutput": blob,
+        }
+    )
+    assert labels == ["znuttyone/ProfitGuard#85"]
+
+
+def test_pr_labels_from_gh_pr_create_stdout_not_pull_new():
+    labels = pr_labels_from_update(
+        {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "rawOutput": {
+                "type": "Bash",
+                "command": "gh pr create --title x --body 'see #58 and pull/70'",
+                "exit_code": 0,
+                "output_for_prompt": (
+                    "remote:      https://github.com/znuttyone/ProfitGuard/pull/new/feat-x\n"
+                    "https://github.com/znuttyone/ProfitGuard/pull/91\n"
+                ),
+            },
+        }
+    )
+    assert labels == ["znuttyone/ProfitGuard#91"]
+
+
+def test_usage_cost_by_session_without_pr_tools(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    sess = grok / "sessions" / "AppS" / "sessA"
+    _write_turn(
+        sess / "updates.jsonl",
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=2_000_000_000,
+    )
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-01",
+            "--to",
+            "2026-08-05",
+            "--by",
+            "session",
+            "--json",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    data = _json_from_cli(r)
+    assert data["by"] == "session"
+    assert data["buckets"][0]["key"] == "sessA"
+    assert "prs" not in data["buckets"][0]
+    r_pr = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-01",
+            "--to",
+            "2026-08-05",
+            "--by",
+            "pr",
+            "--json",
+        ],
+    )
+    assert r_pr.exit_code == 0, r_pr.output
+    assert "No created PRs" in (r_pr.output + r_pr.stderr)
+
+
+def test_usage_cost_by_session_and_pr_one_to_one(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    sess = grok / "sessions" / "ProfitGuard" / "s1"
+    upd = sess / "updates.jsonl"
+    _write_turn(
+        upd,
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=5_000_000_000,
+    )
+    _append_update(upd, _mcp_create_pr_update(session_id="s1", number=85))
+    args = [
+        "-g",
+        str(grok),
+        "usage",
+        "cost",
+        "--from",
+        "2026-08-01",
+        "--to",
+        "2026-08-05",
+        "--json",
+    ]
+    by_sess = _json_from_cli(runner.invoke(app, [*args, "--by", "session"]))
+    by_pr = _json_from_cli(runner.invoke(app, [*args, "--by", "pr"]))
+    assert by_sess["buckets"][0]["key"] == "s1"
+    assert by_sess["buckets"][0]["prs"] == ["znuttyone/ProfitGuard#85"]
+    assert by_pr["buckets"][0]["key"] == "znuttyone/ProfitGuard#85"
+    assert by_pr["buckets"][0]["prs"] == ["znuttyone/ProfitGuard#85"]
+    assert abs(by_pr["totals"]["list_usd"] - by_sess["totals"]["list_usd"]) < 1e-9
+    assert len(by_pr["buckets"]) == 1
+
+
+def test_usage_cost_by_pr_does_not_split_multi(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    sid = "01a059cb-5e07-7893-aab3-bad45b49c8ab"
+    sess = grok / "sessions" / "ProfitGuard" / sid
+    upd = sess / "updates.jsonl"
+    _write_turn(
+        upd,
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=8_000_000_000,
+    )
+    _append_update(
+        upd,
+        _mcp_create_pr_update(
+            session_id=sid,
+            number=70,
+            body="later also https://github.com/znuttyone/ProfitGuard/pull/58",
+        ),
+    )
+    _append_update(upd, _mcp_create_pr_update(session_id=sid, number=72, ts="2026-08-02T13:00:00Z"))
+    args = [
+        "-g",
+        str(grok),
+        "usage",
+        "cost",
+        "--from",
+        "2026-08-01",
+        "--to",
+        "2026-08-05",
+        "--json",
+    ]
+    by_sess = _json_from_cli(runner.invoke(app, [*args, "--by", "session"]))
+    by_pr = _json_from_cli(runner.invoke(app, [*args, "--by", "pr"]))
+    assert len(by_sess["buckets"]) == 1
+    assert by_sess["buckets"][0]["prs"] == [
+        "znuttyone/ProfitGuard#70",
+        "znuttyone/ProfitGuard#72",
+    ]
+    expect = pr_group_key(sid, by_sess["buckets"][0]["prs"])
+    assert expect == "01a059cb… (PRs 70,72)"
+    assert len(by_pr["buckets"]) == 1
+    assert by_pr["buckets"][0]["key"] == expect
+    assert abs(by_pr["totals"]["list_usd"] - by_sess["totals"]["list_usd"]) < 1e-9
+    assert abs(by_pr["buckets"][0]["list_usd"] - by_sess["buckets"][0]["list_usd"]) < 1e-9
+
+
+def test_usage_cost_by_pr_include_unlabeled(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    labeled = grok / "sessions" / "AppL" / "lab"
+    bare = grok / "sessions" / "AppU" / "unlab"
+    _write_turn(
+        labeled / "updates.jsonl",
+        prompt_id="a",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=1,
+        cached=0,
+        reasoning=0,
+        ticks=1000,
+    )
+    _append_update(
+        labeled / "updates.jsonl",
+        _mcp_create_pr_update(session_id="lab", number=3, repo="VCI", owner="znuttyone"),
+    )
+    _write_turn(
+        bare / "updates.jsonl",
+        prompt_id="b",
+        ts="2026-08-02T13:00:00Z",
+        input_t=100,
+        output_t=1,
+        cached=0,
+        reasoning=0,
+        ticks=2000,
+    )
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-01",
+            "--to",
+            "2026-08-05",
+            "--by",
+            "pr",
+            "--include-unlabeled",
+            "--json",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    data = _json_from_cli(r)
+    keys = {b["key"] for b in data["buckets"]}
+    assert "znuttyone/VCI#3" in keys
+    assert "unlab" in keys

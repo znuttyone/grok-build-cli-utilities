@@ -129,6 +129,8 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
 
   Q: Common commands (novice)
   A:  grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
+      grok-utils usage cost --from 2026-08-01 --by session
+      grok-utils usage cost --from 2026-08-01 --by pr
       grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6 -P
       grok-utils usage report --by app --from 2026-08-01
       # --tokens is only needed when not grouping by app, e.g.:

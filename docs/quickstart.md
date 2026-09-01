@@ -94,6 +94,8 @@ grok-utils usage timeline --days 30
 # Token-accurate cost: list$ + path/regime est$
 grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app -m grok-4.6
 grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
+grok-utils usage cost --from 2026-08-01 --by session
+grok-utils usage cost --from 2026-08-01 --by pr
 grok-utils usage cost --from 2026-07-18 --by app -m grok-4.6 --plan-advisor
 grok-utils usage cost --from 2026-08-01 --by app --api-estimate
 grok-utils usage cost --by app --invoice-usd 180 --fixed-usd 30
