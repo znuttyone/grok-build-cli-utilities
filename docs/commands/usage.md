@@ -147,13 +147,13 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 | `--detail` / `-v` | Richer est$ mix + promo table + overage one-liner (FAQ still via `usage info`) |
 | `--json` | Machine-readable (`prepaid_balance_usd`, `weekly_usage_pct`, `weekly_resets_at`, …) |
 
-`--by session` buckets on the Grok Build `sessionId`. Created PRs are labels on that row.
+`--by session` buckets on the Grok Build `sessionId`. The table Key is the created-PR labels, or the project or app name when that session created none. JSON `key` stays the session id. Two sessions with the same Key stay two rows.
 
 `--by pr` attributes cost only from successful github `create_pull_request` tool output or `gh pr create` stdout (`https://github.com/owner/repo/pull/N`). It does not scrape chat text or `get_pull_request`.
 
-- One created PR: the whole session list$ goes to `owner/repo#N` (issue from `Fixes #N` when present).
-- Two or more, same repo: one row such as `znuttyone/ProfitGuard #69,#71,#73`. Tokens are not split. No session id in the key.
-- Mixed repos: `ProfitGuard#81, Blessed-Bits#23, grok-build-cli-utilities#15`.
+- One created PR: the whole session list$ goes to `repo#N` (issue from `Fixes #N` when present).
+- Two or more, same repo: one row such as `ProfitGuard #69,71,73`. Tokens are not split. No session id in the key.
+- Mixed repos: issue and PR numbers in numeric order, such as `ProfitGuard#7, ProfitGuard#8, ProfitGuard#14, grok-build-cli-utilities#15`.
 - Zero created PRs: omitted unless `--include-unlabeled`.
 
 ### Plan advisor (`--plan-advisor` / `-P`)

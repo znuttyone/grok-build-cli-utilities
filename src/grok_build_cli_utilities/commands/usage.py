@@ -205,14 +205,30 @@ def _prs_for_bucket(key: str, group: str, prs_by_session: dict[str, list[Created
     return []
 
 
+def _projects_by_session(records: list[UsageRec]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for r in records:
+        if r.session_id and r.project and r.session_id not in out:
+            out[r.session_id] = r.project
+    return out
+
+
 def _display_bucket_key(
     key: str,
     group: str,
     prs_by_session: dict[str, list[CreatedPr]],
     *,
     width: int,
+    projects_by_session: dict[str, str] | None = None,
 ) -> str:
-    shown = session_display_key(key, prs_by_session.get(key, ())) if group == "session" else key
+    if group == "session":
+        shown = session_display_key(
+            key,
+            prs_by_session.get(key, ()),
+            project=(projects_by_session or {}).get(key, ""),
+        )
+    else:
+        shown = key
     if width <= 0 or len(shown) <= width:
         return shown
     return shown[:width] + "…"
@@ -395,6 +411,7 @@ def report(
                 group,
                 prs_by_session,
                 width=0 if group in ("session", "pr") else 56,
+                projects_by_session=_projects_by_session(records),
             )
             t.add_row(
                 key,
@@ -537,9 +554,10 @@ def cost_report(
         metavar="KEY",
         help=(
             "Group cost by: app | project | model | day | week | month | session | pr. "
-            "session = labels first, short session id last. "
-            "pr = owner/repo#issue (Fixes #N) or owner/repo#PR; "
-            "several PRs stay one row (owner/repo #69,#71), never split; "
+            "session = repo#issue or project name, never a session UUID. "
+            "pr = repo#issue (Fixes #N) or repo#PR; "
+            "several PRs stay one row (ProfitGuard #69,71), never split; "
+            "mixed-repo keys sort numbers (7, 8, 14, 15); "
             "no session UUID in the pr key; "
             "sessions with no created PR are omitted unless --include-unlabeled"
         ),
@@ -970,7 +988,11 @@ def cost_report(
         list_b = win.list_for_key(b.key)
         est_b = win.est_for_key(b.key)
         key = _display_bucket_key(
-            b.key, by, prs_by_session, width=0 if by in ("session", "pr") else 56
+            b.key,
+            by,
+            prs_by_session,
+            width=0 if by in ("session", "pr") else 56,
+            projects_by_session=_projects_by_session(records),
         )
         cells: list[str] = [
             key,

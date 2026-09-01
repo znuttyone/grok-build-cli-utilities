@@ -201,10 +201,8 @@ class CreatedPr:
 
     @property
     def label(self) -> str:
-        """Human id: owner/repo#issue when Fixes is present, else owner/repo#PR."""
+        """Human id: repo#issue when Fixes is present, else repo#PR. No GitHub owner."""
         n = self.display_num
-        if self.owner and self.repo:
-            return f"{self.owner}/{self.repo}#{n}"
         if self.repo:
             return f"{self.repo}#{n}"
         return f"#{n}"
@@ -251,7 +249,7 @@ def _as_created_prs(prs: Iterable[CreatedPr | str]) -> list[CreatedPr]:
             continue
         seen.add(ident)
         out.append(p)
-    out.sort(key=lambda p: (p.repo.lower(), p.owner.lower(), p.display_num, p.pr))
+    out.sort(key=lambda p: (p.display_num, p.pr, p.repo.lower(), p.owner.lower()))
     return out
 
 
@@ -259,14 +257,8 @@ def sorted_pr_labels(labels: Iterable[CreatedPr | str]) -> list[str]:
     return [p.label for p in _as_created_prs(labels)]
 
 
-def short_session_id(session_id: str, *, n: int = 8) -> str:
-    if len(session_id) <= n:
-        return session_id
-    return session_id[:n] + "…"
-
-
 def pr_group_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str | None:
-    """Table/JSON key for --by pr. Repo and issue first. Never a session UUID."""
+    """Table/JSON key for --by pr. Issue and PR numbers in numeric order. Never a session UUID."""
     created = _as_created_prs(prs)
     if not created:
         return None
@@ -279,21 +271,27 @@ def pr_group_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str | None:
     nums = ",".join(str(p.display_num) for p in created)
     if len(repos) == 1:
         p0 = created[0]
-        head = f"{p0.owner}/{p0.repo}" if p0.owner and p0.repo else (p0.repo or "repo")
-        return f"{head}\u00a0#{nums}"
+        head = p0.repo or "repo"
+        return f"{head} #{nums}"
     return ", ".join(p.short_label for p in created)
 
 
-def session_display_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str:
-    """Labels first, short session id last."""
+def session_display_key(
+    session_id: str,
+    prs: Iterable[CreatedPr | str],
+    *,
+    project: str = "",
+) -> str:
+    """Human table key for --by session. Repo/issues, not a UUID."""
     created = _as_created_prs(prs)
-    if not created:
-        return session_id
-    short = short_session_id(session_id)
-    head = pr_group_key(session_id, created)
-    if not head:
-        return session_id
-    return f"{head}  {short}"
+    if created:
+        head = pr_group_key(session_id, created)
+        if head:
+            return head
+    app = (project or "").strip()
+    if app:
+        return app
+    return session_id
 
 
 def _bare_tool_name(name: str) -> str:
