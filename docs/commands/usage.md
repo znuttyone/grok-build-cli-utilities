@@ -33,6 +33,7 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 | Which app/day used the most? | `usage cost --by app` or `--by day` → **list$** |
 | Which Grok Build session? | `usage cost --by session` → **list$** (PR labels when that session created PRs) |
 | Which GitHub PR (1:1 session only)? | `usage cost --by pr` → **list$**. Multi-PR sessions stay one row. No GitHub API. |
+| Session or PR Keys missing? | The Grok Build session did not report them. You still get `--by app`. See [Session and PR keys](#session-and-pr-keys). |
 | Extra-credit burn estimate | **est$** (regime-aware) or re-fit with `--prepaid-usd` + `--credits-remaining` |
 | “How heavy was this session?” | Build **Session Cost** |
 | “How much is left / weekly pool?” | `auth status` or cost footer wallet snapshot |
@@ -147,18 +148,36 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 | `--detail` / `-v` | Richer est$ mix + promo table + overage one-liner (FAQ still via `usage info`) |
 | `--json` | Machine-readable (`prepaid_balance_usd`, `weekly_usage_pct`, `weekly_resets_at`, …) |
 
-`--by session` buckets on the Grok Build `sessionId`. The table Key is the created-PR labels, or the project or app name when that session created none. JSON `key` stays the session id. Two sessions with the same Key stay two rows. The Key then gains a short session id (`Blessed-Bits#22 · 01a05e3c…`).
+`--by session` buckets on the Grok Build `sessionId`. The table Key is the created-PR labels, or the project or app name when that session created none. JSON `key` stays the session id. Two sessions with the same Key stay two rows. The Key then gains a short session id (`notes#22 · 01a05e3c…`).
 
 `--by pr` attributes cost only from successful github `create_pull_request` tool output or `gh pr create` stdout (`https://github.com/owner/repo/pull/N`). It does not scrape chat text or `get_pull_request`.
 
-- One created PR: the whole session list$ goes to `repo#N` (issue from `Fixes #N` when present).
-- Two or more, same repo: one row such as `ProfitGuard #69,71,73`. Tokens are not split. No session id in the key.
-- Mixed repos: `ProfitGuard #7,8,14 · grok-build-cli-utilities #15`.
+- One created PR: the whole session list$ goes to `repo#N` (issue from `Fixes` or `Closes` when present).
+- Two or more, same repo: one row such as `widgets #12,15`. Tokens are not split. No session id in the key.
+- Mixed repos: `widgets #7,8,14 · notes #15`.
 - Zero created PRs: omitted unless `--include-unlabeled`.
 - Multi-PR rows stay one session. The table prints `Keys with several PRs are one session; tokens are not split.`
 - The Key column does not wrap onto a fake extra row. Long Keys ellipsize.
 
-`--by app` pretty-prints leftover cwd names and keeps them off the parent app Key. `Blessed-Bits-issue-9` becomes `Blessed-Bits#9`. A Grok worktree `~/.grok/worktrees/github-grok-build-cli-utilities/subagent-<uuid>` becomes `grok-build-cli-utilities (worktree)`. When the leaf is not `subagent-<uuid>`, the Key uses that worktree label.
+`--by app` pretty-prints leftover cwd names and keeps them off the parent app Key. `notes-issue-9` becomes `notes#9`. A Grok worktree `~/.grok/worktrees/github-grok-build-cli-utilities/subagent-<uuid>` becomes `grok-build-cli-utilities (worktree)`. When the leaf is not `subagent-<uuid>`, the Key uses that worktree label.
+
+### Session and PR keys
+
+`--by app` is the folder name (`basename` of the session cwd). One Grok Build chat in that folder is one cost bucket, even when it shipped many PRs.
+
+`--by session` and `--by pr` add chat and 1:1 PR views. Those Keys appear only when the Grok Build session reports them. If you skip the setup below, you still get `--by app`.
+
+Run one Grok Build session per unit of work. Several PRs from one parent chat stay one unsplit `--by pr` row. Keys with several PRs are one session. Tokens are not split.
+
+Start the session with cwd in the repo for that work, or in a Grok worktree, or in a `repo-issue-N` clone. Do not start it in an unrelated folder. `--by app` is basename(cwd). A chat started in the wrong repo shows that folder's name. PR labels, if any, still come from whatever `create_pull_request` or `gh pr create` ran.
+
+Create each PR with github `create_pull_request` (OkayOutput fields `number` and `html_url`) or with `gh pr create` (the stdout URL in `updates.jsonl`). Chat text and `get_pull_request` do not count.
+
+Put `Fixes` or `Closes` in the create body so the Key includes the issue number.
+
+Grok worktrees under `~/.grok/worktrees` and `*-issue-N` clones pretty-print as their own `--by app` Keys. They are not merged into the parent clone Key.
+
+Same-repo example: `widgets #12,15`. Mixed: `widgets #7,8,14 · notes #15`. Issue clone: `notes-issue-9` becomes `notes#9`. Collision: `notes#22 · 01a05e3c…`.
 
 ### Plan advisor (`--plan-advisor` / `-P`)
 

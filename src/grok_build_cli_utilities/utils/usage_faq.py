@@ -127,6 +127,25 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
      - "How much is left / weekly pool?" → Extra Credits $ + weekly % (auth status)
      - "Which plan if I keep this pace?" → usage cost --plan-advisor (-P)
 
+  Q: Why is --by session or --by pr still the folder name?
+  A: PR-level Keys and clean session labels appear only when the Grok Build
+     session reports them. If you skip this, you still get --by app (the
+     folder name).
+       · One Grok Build session per unit of work. Several PRs from one parent
+         chat stay one unsplit --by pr row. Keys with several PRs are one
+         session; tokens are not split.
+       · Session cwd is the repo (or Grok worktree / repo-issue-N clone) for
+         that work. Not an unrelated folder. --by app is basename(cwd). A chat
+         started in the wrong repo shows that folder's name. PR labels, if
+         any, come from whatever create_pull_request or gh pr create ran.
+       · PR labels: only github create_pull_request OkayOutput (number,
+         html_url) or gh pr create stdout URL in updates.jsonl. Chat text
+         and get_pull_request do not count.
+       · Fixes or Closes in the create body puts the issue number in the Key.
+       · Grok worktrees (~/.grok/worktrees/...) and *-issue-N clones
+         pretty-print as their own --by app Keys. They are not merged into
+         the parent clone Key.
+
   Q: Common commands (novice)
   A:  grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
       grok-utils usage cost --from 2026-08-01 --by session

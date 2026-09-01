@@ -81,8 +81,8 @@ def test_make_table_key_ellipsis_no_phantom_row():
     from rich.console import Console
 
     t = make_table("Cost", ["Key", "Prm", "Tokens"], no_wrap=("Key",))
-    t.add_row("ProfitGuard #7,8,14 · grok-build-cli-utilities #15", "2", "16.4M")
-    t.add_row("Blessed-Bits#22 · 01a05e3c…", "1", "1.0M")
+    t.add_row("widgets #7,8,12,14,15 · notes #16,18,19,20,22", "2", "16.4M")
+    t.add_row("notes#22 · 01a05e3c…", "1", "1.0M")
     buf = StringIO()
     # height is required: Rich 15 ignores width alone when TERM is dumb (local).
     Console(file=buf, width=40, height=24, force_terminal=True, color_system=None).print(t)
@@ -91,8 +91,8 @@ def test_make_table_key_ellipsis_no_phantom_row():
     assert len(data) == 2
     assert all(len(ln) <= 40 for ln in lines)
     blob = "\n".join(lines)
-    assert "ProfitGuard#14" not in blob
-    assert "grok-build-cli-utilities #15" not in blob
+    assert "widgets#14" not in blob
+    assert "notes #16" not in blob
     assert t.columns[0].no_wrap is True
     assert t.columns[0].overflow == "ellipsis"
 

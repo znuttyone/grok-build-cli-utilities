@@ -591,10 +591,14 @@ def cost_report(
         metavar="KEY",
         help=(
             "Group cost by: app | project | model | day | week | month | session | pr. "
-            "session = repo#issue or project name, never a session UUID. "
-            "pr = repo#issue (Fixes #N) or repo#PR; "
-            "several PRs stay one row (ProfitGuard #69,71), never split; "
-            "mixed-repo keys compact (ProfitGuard #7,8,14 · grok-build-cli-utilities #15); "
+            "app is basename(cwd). session and pr Keys need one Grok Build "
+            "session per unit of work, cwd in that repo, and github "
+            "create_pull_request OkayOutput or gh pr create stdout in "
+            "updates.jsonl. session = repo#issue or project name, never a "
+            "session UUID. pr = repo#issue (Fixes or Closes) or repo#PR; "
+            "several PRs stay one row (widgets #12,15), never split; "
+            "mixed-repo keys compact (widgets #7,8,14 · notes #15); "
+            "colliding Keys keep two rows (notes#22 · 01a05e3c…); "
             "no session UUID in the pr key; "
             "sessions with no created PR are omitted unless --include-unlabeled"
         ),
@@ -728,7 +732,7 @@ def cost_report(
       # Closed window
       grok-utils usage cost --from 2026-08-01 --to 2026-08-05 --by app
 
-      # Per Grok Build session (PR labels when create_pull_request / gh pr create ran)
+      # Per Grok Build session (PR labels when create_pull_request or gh pr create ran)
       grok-utils usage cost --from 2026-08-01 --by session
 
       # Per GitHub PR when the session created exactly one; multi-PR sessions stay one row
@@ -749,6 +753,27 @@ def cost_report(
 
       # Invoice allocation (amount required)
       grok-utils usage cost ... --invoice-usd 180 --fixed-usd 30
+
+    PR-level Keys and clean session labels appear only when the Grok Build
+    session reports them. If you skip this, you still get --by app (the
+    folder name).
+
+    One Grok Build session per unit of work. Several PRs from one parent chat
+    stay one unsplit --by pr row. Keys with several PRs are one session;
+    tokens are not split.
+
+    Session cwd is the repo (or Grok worktree / repo-issue-N clone) for that
+    work. Not an unrelated folder. --by app is basename(cwd). A chat started
+    in the wrong repo shows that folder's name. PR labels, if any, come from
+    whatever create_pull_request or gh pr create ran.
+
+    PR labels: only github create_pull_request OkayOutput (number, html_url)
+    or gh pr create stdout URL in updates.jsonl. Chat text and
+    get_pull_request do not count. Fixes or Closes in the create body
+    puts the issue number in the Key.
+
+    Grok worktrees (~/.grok/worktrees/...) and *-issue-N clones pretty-print
+    as their own --by app Keys. They are not merged into the parent clone Key.
 
     See: grok-utils usage info
     """

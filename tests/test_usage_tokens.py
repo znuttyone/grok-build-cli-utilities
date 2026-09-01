@@ -110,8 +110,8 @@ def _mcp_create_pr_update(
     *,
     session_id: str,
     number: int,
-    owner: str = "znuttyone",
-    repo: str = "ProfitGuard",
+    owner: str = "example",
+    repo: str = "widgets",
     body: str = "",
     ts: str = "2026-08-02T12:05:00Z",
 ) -> dict:
@@ -145,7 +145,7 @@ def _mcp_create_pr_update(
 
 
 def _mcp_get_pr_update(*, session_id: str, number: int) -> dict:
-    html = f"https://github.com/znuttyone/ProfitGuard/pull/{number}"
+    html = f"https://github.com/example/widgets/pull/{number}"
     ok = {"html_url": html, "number": number, "title": f"dependabot {number}"}
     return {
         "method": "session/update",
@@ -180,7 +180,7 @@ def test_list_price_usd_matches_xai_ticks():
     assert TICKS_PER_USD == 10_000_000_000
     # update-for-46 /usage Cost $1.5465
     assert abs(list_price_usd(15_464_980_000) - 1.546498) < 1e-9
-    # ProfitGuard /usage Cost $77.3463 (mid-session snapshot)
+    # widgets /usage Cost $77.3463 (mid-session snapshot)
     assert abs(list_price_usd(773_463_000_000) - 77.3463) < 1e-9
     rec = UsageRec(
         prompt_id="t",
@@ -253,7 +253,7 @@ def test_rates_for_model_fuzzy():
 
 def test_load_dedupe_and_filter(tmp_path: Path):
     # encoded cwd style path
-    sess = tmp_path / "sessions" / "%2FUsers%2Fme%2FDocuments%2FGitHub%2FBlessed-Bits" / "sid1"
+    sess = tmp_path / "sessions" / "%2FUsers%2Fme%2FDocuments%2FGitHub%2Fnotes" / "sid1"
     upd = sess / "updates.jsonl"
     _write_turn(
         upd,
@@ -304,7 +304,7 @@ def test_load_dedupe_and_filter(tmp_path: Path):
     assert len(recs) == 3  # p1 kept max, p2, p3
     filtered = filter_usage(recs, date_from=date(2026, 8, 1), date_to=date(2026, 8, 5))
     assert len(filtered) == 2
-    assert all(r.project == "Blessed-Bits" for r in filtered)
+    assert all(r.project == "notes" for r in filtered)
 
     buckets = aggregate(filtered, "app")
     assert len(buckets) == 1
@@ -466,6 +466,24 @@ def test_usage_info():
     r = runner.invoke(app, ["usage", "info"])
     assert r.exit_code == 0
     assert "SuperGrok" in r.output
+
+
+def test_usage_info_and_cost_help_mention_cwd_and_native_pr_create():
+    info = runner.invoke(app, ["usage", "info"])
+    assert info.exit_code == 0, info.output
+    blob = info.output
+    assert "cwd" in blob
+    assert "basename(cwd)" in blob
+    assert "create_pull_request" in blob
+    assert "gh pr create" in blob
+    assert "get_pull_request" in blob
+    help_r = runner.invoke(app, ["usage", "cost", "--help"])
+    assert help_r.exit_code == 0, help_r.output
+    h = help_r.output
+    assert "cwd" in h
+    assert "basename(cwd)" in h
+    assert "create_pull_request" in h
+    assert "gh pr create" in h
 
 
 def test_allocate_paygo_sums_to_total(tmp_path: Path):
@@ -782,8 +800,8 @@ def test_pre_log_in_pool_heavy_uses_pool_not_list():
     r = UsageRec(
         prompt_id="old",
         ts=datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc),
-        project="ProfitGuard",
-        cwd="/ProfitGuard",
+        project="widgets",
+        cwd="/widgets",
         session_id="s1",
         input=1_000_000,
         cached=1_000_000,
@@ -1321,7 +1339,7 @@ def test_scan_pr_creates_mcp_and_ignores_get_and_prose(tmp_path: Path):
         _mcp_create_pr_update(
             session_id="s1",
             number=85,
-            body="mentions https://github.com/znuttyone/ProfitGuard/pull/70 in the body",
+            body="mentions https://github.com/example/widgets/pull/70 in the body",
         ),
     )
     _append_update(upd, _mcp_get_pr_update(session_id="s1", number=58))
@@ -1336,14 +1354,14 @@ def test_scan_pr_creates_mcp_and_ignores_get_and_prose(tmp_path: Path):
                     "sessionUpdate": "agent_message_chunk",
                     "content": {
                         "type": "text",
-                        "text": "Dependabot #58 https://github.com/znuttyone/ProfitGuard/pull/58",
+                        "text": "Dependabot #58 https://github.com/example/widgets/pull/58",
                     },
                 },
             },
         },
     )
     labels = scan_pr_creates(upd)
-    assert labels == {"ProfitGuard#85"}
+    assert labels == {"widgets#85"}
     assert "58" not in "".join(labels)
     assert "70" not in "".join(labels)
 
@@ -1352,7 +1370,7 @@ def test_pr_labels_from_string_raw_output():
     ok = json.dumps(
         {
             "number": 85,
-            "html_url": "https://github.com/znuttyone/ProfitGuard/pull/85",
+            "html_url": "https://github.com/example/widgets/pull/85",
         }
     )
     blob = json.dumps({"tool_name": "create_pull_request", "OkayOutput": ok})
@@ -1363,7 +1381,7 @@ def test_pr_labels_from_string_raw_output():
             "rawOutput": blob,
         }
     )
-    assert labels == ["ProfitGuard#85"]
+    assert labels == ["widgets#85"]
 
 
 def test_pr_labels_from_gh_pr_create_stdout_not_pull_new():
@@ -1376,13 +1394,13 @@ def test_pr_labels_from_gh_pr_create_stdout_not_pull_new():
                 "command": "gh pr create --title x --body 'see #58 and pull/70'",
                 "exit_code": 0,
                 "output_for_prompt": (
-                    "remote:      https://github.com/znuttyone/ProfitGuard/pull/new/feat-x\n"
-                    "https://github.com/znuttyone/ProfitGuard/pull/91\n"
+                    "remote:      https://github.com/example/widgets/pull/new/feat-x\n"
+                    "https://github.com/example/widgets/pull/91\n"
                 ),
             },
         }
     )
-    assert labels == ["ProfitGuard#91"]
+    assert labels == ["widgets#91"]
 
 
 def test_usage_cost_by_session_without_pr_tools(tmp_path: Path):
@@ -1441,7 +1459,7 @@ def test_usage_cost_by_session_without_pr_tools(tmp_path: Path):
 
 def test_usage_cost_by_session_and_pr_one_to_one(tmp_path: Path):
     grok = tmp_path / ".grok"
-    sess = grok / "sessions" / "ProfitGuard" / "s1"
+    sess = grok / "sessions" / "widgets" / "s1"
     upd = sess / "updates.jsonl"
     _write_turn(
         upd,
@@ -1468,9 +1486,9 @@ def test_usage_cost_by_session_and_pr_one_to_one(tmp_path: Path):
     by_sess = _json_from_cli(runner.invoke(app, [*args, "--by", "session"]))
     by_pr = _json_from_cli(runner.invoke(app, [*args, "--by", "pr"]))
     assert by_sess["buckets"][0]["key"] == "s1"
-    assert by_sess["buckets"][0]["prs"] == ["ProfitGuard#85"]
-    assert by_pr["buckets"][0]["key"] == "ProfitGuard#85"
-    assert by_pr["buckets"][0]["prs"] == ["ProfitGuard#85"]
+    assert by_sess["buckets"][0]["prs"] == ["widgets#85"]
+    assert by_pr["buckets"][0]["key"] == "widgets#85"
+    assert by_pr["buckets"][0]["prs"] == ["widgets#85"]
     assert abs(by_pr["totals"]["list_usd"] - by_sess["totals"]["list_usd"]) < 1e-9
     assert len(by_pr["buckets"]) == 1
 
@@ -1478,7 +1496,7 @@ def test_usage_cost_by_session_and_pr_one_to_one(tmp_path: Path):
 def test_usage_cost_by_pr_does_not_split_multi(tmp_path: Path):
     grok = tmp_path / ".grok"
     sid = "01a059cb-5e07-7893-aab3-bad45b49c8ab"
-    sess = grok / "sessions" / "ProfitGuard" / sid
+    sess = grok / "sessions" / "widgets" / sid
     upd = sess / "updates.jsonl"
     _write_turn(
         upd,
@@ -1495,7 +1513,7 @@ def test_usage_cost_by_pr_does_not_split_multi(tmp_path: Path):
         _mcp_create_pr_update(
             session_id=sid,
             number=70,
-            body="later also https://github.com/znuttyone/ProfitGuard/pull/58",
+            body="later also https://github.com/example/widgets/pull/58",
         ),
     )
     _append_update(upd, _mcp_create_pr_update(session_id=sid, number=72, ts="2026-08-02T13:00:00Z"))
@@ -1514,11 +1532,11 @@ def test_usage_cost_by_pr_does_not_split_multi(tmp_path: Path):
     by_pr = _json_from_cli(runner.invoke(app, [*args, "--by", "pr"]))
     assert len(by_sess["buckets"]) == 1
     assert by_sess["buckets"][0]["prs"] == [
-        "ProfitGuard#70",
-        "ProfitGuard#72",
+        "widgets#70",
+        "widgets#72",
     ]
     expect = pr_group_key(sid, by_sess["buckets"][0]["prs"])
-    assert expect == "ProfitGuard #70,72"
+    assert expect == "widgets #70,72"
     assert "01a059cb" not in expect
     assert len(by_pr["buckets"]) == 1
     assert by_pr["buckets"][0]["key"] == expect
@@ -1542,7 +1560,7 @@ def test_usage_cost_by_pr_include_unlabeled(tmp_path: Path):
     )
     _append_update(
         labeled / "updates.jsonl",
-        _mcp_create_pr_update(session_id="lab", number=3, repo="VCI", owner="znuttyone"),
+        _mcp_create_pr_update(session_id="lab", number=3, repo="VCI", owner="example"),
     )
     _write_turn(
         bare / "updates.jsonl",
@@ -1584,34 +1602,32 @@ def test_session_display_key_has_no_uuid_when_labeled():
         session_display_key,
     )
 
-    one = CreatedPr("znuttyone", "ProfitGuard", pr=83, issue=81)
-    shown = session_display_key("01a059cb-deadbeef", [one], project="ProfitGuard")
-    assert shown == "ProfitGuard#81→#83"
+    one = CreatedPr("example", "widgets", pr=83, issue=81)
+    shown = session_display_key("01a059cb-deadbeef", [one], project="widgets")
+    assert shown == "widgets#81→#83"
     assert "01a0" not in shown
-    bare = session_display_key("01a059cb-deadbeef", [], project="ProfitGuard")
-    assert bare == "ProfitGuard"
+    bare = session_display_key("01a059cb-deadbeef", [], project="widgets")
+    assert bare == "widgets"
 
 
 def test_pr_group_key_prefers_issue_and_drops_uuid():
     from grok_build_cli_utilities.utils.usage_tokens import CreatedPr, pr_group_key
 
-    one = CreatedPr("znuttyone", "ProfitGuard", pr=83, issue=81)
-    assert pr_group_key("01a059cb-dead", [one]) == "ProfitGuard#81→#83"
+    one = CreatedPr("example", "widgets", pr=83, issue=81)
+    assert pr_group_key("01a059cb-dead", [one]) == "widgets#81→#83"
     same_repo = [
-        CreatedPr("znuttyone", "ProfitGuard", pr=70, issue=69),
-        CreatedPr("znuttyone", "ProfitGuard", pr=72, issue=71),
+        CreatedPr("example", "widgets", pr=70, issue=69),
+        CreatedPr("example", "widgets", pr=72, issue=71),
     ]
-    assert pr_group_key("01a059cb-dead", same_repo) == "ProfitGuard #69,71"
-    assert pr_group_key("01a059cb-dead", list(reversed(same_repo))) == "ProfitGuard #69,71"
+    assert pr_group_key("01a059cb-dead", same_repo) == "widgets #69,71"
+    assert pr_group_key("01a059cb-dead", list(reversed(same_repo))) == "widgets #69,71"
     mixed = [
-        CreatedPr("znuttyone", "ProfitGuard", pr=83, issue=81),
-        CreatedPr("znuttyone", "Blessed-Bits", pr=23, issue=None),
-        CreatedPr("cobusgreyling", "grok-build-cli-utilities", pr=15, issue=None),
+        CreatedPr("example", "widgets", pr=80, issue=7),
+        CreatedPr("example", "widgets", pr=81, issue=8),
+        CreatedPr("example", "widgets", pr=82, issue=14),
+        CreatedPr("example", "notes", pr=15, issue=None),
     ]
-    assert (
-        pr_group_key("01a05e3c-dead", mixed)
-        == "grok-build-cli-utilities #15 · Blessed-Bits #23 · ProfitGuard #81"
-    )
+    assert pr_group_key("01a05e3c-dead", mixed) == "widgets #7,8,14 · notes #15"
 
 
 def test_pr_group_key_sorts_mixed_repos_by_number():
@@ -1622,19 +1638,19 @@ def test_pr_group_key_sorts_mixed_repos_by_number():
     )
 
     mixed = [
-        CreatedPr("cobusgreyling", "grok-build-cli-utilities", pr=15, issue=None),
-        CreatedPr("znuttyone", "ProfitGuard", pr=80, issue=7),
-        CreatedPr("znuttyone", "ProfitGuard", pr=81, issue=8),
-        CreatedPr("znuttyone", "ProfitGuard", pr=82, issue=14),
+        CreatedPr("example", "notes", pr=15, issue=None),
+        CreatedPr("example", "widgets", pr=80, issue=7),
+        CreatedPr("example", "widgets", pr=81, issue=8),
+        CreatedPr("example", "widgets", pr=82, issue=14),
     ]
-    expect = "ProfitGuard #7,8,14 · grok-build-cli-utilities #15"
+    expect = "widgets #7,8,14 · notes #15"
     assert pr_group_key("01a05e3c-dead", mixed) == expect
     assert pr_group_key("01a05e3c-dead", list(reversed(mixed))) == expect
     assert sorted_pr_labels(mixed) == [
-        "ProfitGuard#7",
-        "ProfitGuard#8",
-        "ProfitGuard#14",
-        "grok-build-cli-utilities#15",
+        "widgets#7",
+        "widgets#8",
+        "widgets#14",
+        "notes#15",
     ]
 
 
@@ -1657,8 +1673,8 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
         _mcp_create_pr_update(
             session_id="mix",
             number=15,
-            owner="cobusgreyling",
-            repo="grok-build-cli-utilities",
+            owner="example",
+            repo="notes",
         ),
     )
     _append_update(
@@ -1666,7 +1682,7 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
         _mcp_create_pr_update(
             session_id="mix",
             number=80,
-            repo="ProfitGuard",
+            repo="widgets",
             body="Fixes #7",
         ),
     )
@@ -1675,7 +1691,7 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
         _mcp_create_pr_update(
             session_id="mix",
             number=81,
-            repo="ProfitGuard",
+            repo="widgets",
             body="Fixes #8",
         ),
     )
@@ -1684,7 +1700,7 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
         _mcp_create_pr_update(
             session_id="mix",
             number=82,
-            repo="ProfitGuard",
+            repo="widgets",
             body="Fixes #14",
         ),
     )
@@ -1706,8 +1722,8 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
     assert r.exit_code == 0, r.output
     blob = r.output + (r.stdout or "")
     compact = " ".join(blob.split())
-    assert "ProfitGuard #7,8,14" in compact
-    assert "ProfitGuard#14" not in compact
+    assert "widgets #7,8,14" in compact
+    assert "widgets#14" not in compact
     by_pr = _json_from_cli(
         runner.invoke(
             app,
@@ -1726,13 +1742,13 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
             ],
         )
     )
-    assert by_pr["buckets"][0]["key"] == ("ProfitGuard #7,8,14 · grok-build-cli-utilities #15")
+    assert by_pr["buckets"][0]["key"] == "widgets #7,8,14 · notes #15"
 
 
 def test_usage_cost_by_session_keeps_duplicate_display_keys(tmp_path: Path):
     grok = tmp_path / ".grok"
     for sid, ticks in (("sid-a", 5_000_000_000), ("sid-b", 1_000_000_000)):
-        sess = grok / "sessions" / "ProfitGuard-issue-69" / sid
+        sess = grok / "sessions" / "widgets-issue-69" / sid
         _write_turn(
             sess / "updates.jsonl",
             prompt_id=sid,
@@ -1760,14 +1776,14 @@ def test_usage_cost_by_session_keeps_duplicate_display_keys(tmp_path: Path):
     r = runner.invoke(app, args)
     assert r.exit_code == 0, r.output
     blob = r.output + (r.stdout or "")
-    assert "ProfitGuard#69 · sid-a" in blob
-    assert "ProfitGuard#69 · sid-b" in blob
-    assert "ProfitGuard-issue-69" not in blob
+    assert "widgets#69 · sid-a" in blob
+    assert "widgets#69 · sid-b" in blob
+    assert "widgets-issue-69" not in blob
 
 
 def test_usage_cost_by_pr_uses_fixes_issue(tmp_path: Path):
     grok = tmp_path / ".grok"
-    sess = grok / "sessions" / "ProfitGuard" / "s1"
+    sess = grok / "sessions" / "widgets" / "s1"
     upd = sess / "updates.jsonl"
     _write_turn(
         upd,
@@ -1784,7 +1800,7 @@ def test_usage_cost_by_pr_uses_fixes_issue(tmp_path: Path):
         _mcp_create_pr_update(
             session_id="s1",
             number=83,
-            body="Fixes #81\n\nAlso mentions https://github.com/znuttyone/ProfitGuard/pull/58",
+            body="Fixes #81\n\nAlso mentions https://github.com/example/widgets/pull/58",
         ),
     )
     _append_update(upd, _mcp_get_pr_update(session_id="s1", number=58))
@@ -1806,8 +1822,8 @@ def test_usage_cost_by_pr_uses_fixes_issue(tmp_path: Path):
     )
     assert r.exit_code == 0, r.output
     data = _json_from_cli(r)
-    assert data["buckets"][0]["key"] == "ProfitGuard#81→#83"
-    assert data["buckets"][0]["prs"] == ["ProfitGuard#81"]
+    assert data["buckets"][0]["key"] == "widgets#81→#83"
+    assert data["buckets"][0]["prs"] == ["widgets#81"]
     blob = json.dumps(data)
     assert "#58" not in blob
     assert "01a0" not in data["buckets"][0]["key"]
@@ -1827,15 +1843,12 @@ def test_pretty_app_name_worktree_and_issue_clone():
     assert pretty_app_name("update-for-46", labeled) == ("grok-build-cli-utilities (update-for-46)")
     assert (
         pretty_app_name(
-            "Blessed-Bits-issue-9",
-            "/Users/brunnr/Documents/GitHub/Blessed-Bits-issue-9",
+            "notes-issue-9",
+            "/Users/brunnr/Documents/GitHub/notes-issue-9",
         )
-        == "Blessed-Bits#9"
+        == "notes#9"
     )
-    assert (
-        pretty_app_name("Blessed-Bits", "/Users/brunnr/Documents/GitHub/Blessed-Bits")
-        == "Blessed-Bits"
-    )
+    assert pretty_app_name("notes", "/Users/brunnr/Documents/GitHub/notes") == "notes"
 
 
 def test_project_from_path_pretty_names(tmp_path: Path):
@@ -1855,27 +1868,27 @@ def test_project_from_path_pretty_names(tmp_path: Path):
     assert short == "grok-build-cli-utilities (worktree)"
     assert cwd.endswith("subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1")
 
-    issue = "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FBlessed-Bits-issue-9"
+    issue = "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fnotes-issue-9"
     short, _cwd = project_from_path(_touch(issue))
-    assert short == "Blessed-Bits#9"
+    assert short == "notes#9"
 
-    parent = "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FBlessed-Bits"
+    parent = "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fnotes"
     short, _cwd = project_from_path(_touch(parent))
-    assert short == "Blessed-Bits"
+    assert short == "notes"
 
 
 def test_disambiguate_display_keys_collision_suffix():
     from grok_build_cli_utilities.utils.usage_tokens import disambiguate_display_keys
 
-    uniq = disambiguate_display_keys(["a", "b"], ["ProfitGuard #69,71", "Blessed-Bits#9"])
-    assert uniq == ["ProfitGuard #69,71", "Blessed-Bits#9"]
+    uniq = disambiguate_display_keys(["a", "b"], ["widgets #12,15", "notes#9"])
+    assert uniq == ["widgets #12,15", "notes#9"]
     collided = disambiguate_display_keys(
         ["01a05e3c-deadbeef", "01a05e3d-cafe"],
-        ["Blessed-Bits#22", "Blessed-Bits#22"],
+        ["notes#22", "notes#22"],
     )
     assert collided == [
-        "Blessed-Bits#22 · 01a05e3c…",
-        "Blessed-Bits#22 · 01a05e3d…",
+        "notes#22 · 01a05e3c…",
+        "notes#22 · 01a05e3d…",
     ]
 
 
@@ -1883,12 +1896,12 @@ def test_pr_group_key_mixed_compact():
     from grok_build_cli_utilities.utils.usage_tokens import CreatedPr, pr_group_key
 
     mixed = [
-        CreatedPr("znuttyone", "ProfitGuard", pr=80, issue=7),
-        CreatedPr("znuttyone", "ProfitGuard", pr=81, issue=8),
-        CreatedPr("znuttyone", "ProfitGuard", pr=82, issue=14),
-        CreatedPr("cobusgreyling", "grok-build-cli-utilities", pr=15, issue=None),
+        CreatedPr("example", "widgets", pr=80, issue=7),
+        CreatedPr("example", "widgets", pr=81, issue=8),
+        CreatedPr("example", "widgets", pr=82, issue=14),
+        CreatedPr("example", "notes", pr=15, issue=None),
     ]
-    assert pr_group_key("sid", mixed) == "ProfitGuard #7,8,14 · grok-build-cli-utilities #15"
+    assert pr_group_key("sid", mixed) == "widgets #7,8,14 · notes #15"
 
 
 def test_usage_cost_by_app_pretty_keeps_parent_separate(tmp_path: Path):
@@ -1899,8 +1912,8 @@ def test_usage_cost_by_app_pretty_keeps_parent_separate(tmp_path: Path):
             "%2FUsers%2Fbrunnr%2F.grok%2Fworktrees%2Fgithub-grok-build-cli-utilities"
             "%2Fsubagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
         ): 2_000_000_000,
-        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FBlessed-Bits-issue-9": 3_000_000_000,
-        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FProfitGuard-issue-79": 4_000_000_000,
+        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fnotes-issue-9": 3_000_000_000,
+        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fwidgets-issue-79": 4_000_000_000,
     }
     for i, (encoded, ticks) in enumerate(paths.items()):
         _write_turn(
@@ -1934,10 +1947,10 @@ def test_usage_cost_by_app_pretty_keeps_parent_separate(tmp_path: Path):
     keys = {b["key"] for b in data["buckets"]}
     assert "grok-build-cli-utilities" in keys
     assert "grok-build-cli-utilities (worktree)" in keys
-    assert "Blessed-Bits#9" in keys
-    assert "ProfitGuard#79" in keys
-    assert "Blessed-Bits-issue-9" not in keys
-    assert "ProfitGuard-issue-79" not in keys
+    assert "notes#9" in keys
+    assert "widgets#79" in keys
+    assert "notes-issue-9" not in keys
+    assert "widgets-issue-79" not in keys
     assert not any(k.startswith("subagent-") for k in keys)
 
 
@@ -1946,7 +1959,7 @@ def test_usage_cost_by_pr_prints_unsplit_note(tmp_path: Path):
 
     grok = tmp_path / ".grok"
     sid = "01a059cb-5e07-7893-aab3-bad45b49c8ab"
-    upd = grok / "sessions" / "ProfitGuard" / sid / "updates.jsonl"
+    upd = grok / "sessions" / "widgets" / sid / "updates.jsonl"
     _write_turn(
         upd,
         prompt_id="p1",
@@ -1977,4 +1990,4 @@ def test_usage_cost_by_pr_prints_unsplit_note(tmp_path: Path):
     assert r.exit_code == 0, r.output
     blob = r.output + (r.stdout or "")
     assert UNSPLIT_MULTI_PR_NOTE in blob
-    assert "ProfitGuard #70,72" in blob
+    assert "widgets #70,72" in blob
