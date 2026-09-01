@@ -75,6 +75,25 @@ def test_make_table_basic():
     assert t is not None
 
 
+def test_make_table_key_ellipsis_no_phantom_row():
+    from io import StringIO
+
+    from rich.console import Console
+
+    t = make_table("Cost", ["Key", "Prm", "Tokens"], no_wrap=("Key",))
+    t.add_row("ProfitGuard #7,8,14 · grok-build-cli-utilities #15", "2", "16.4M")
+    t.add_row("Blessed-Bits#22 · 01a05e3c…", "1", "1.0M")
+    buf = StringIO()
+    Console(file=buf, width=40, force_terminal=True, color_system=None).print(t)
+    lines = [ln.rstrip() for ln in buf.getvalue().splitlines() if ln.strip()]
+    data = [ln for ln in lines if "16.4M" in ln or "1.0M" in ln]
+    assert len(data) == 2
+    blob = "\n".join(lines)
+    assert "ProfitGuard#14" not in blob
+    assert t.columns[0].no_wrap is True
+    assert t.columns[0].overflow == "ellipsis"
+
+
 def test_skill_template_and_validate():
     md = skill_template("test-skill", "Does amazing things for testing")
     assert "name: test-skill" in md

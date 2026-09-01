@@ -167,6 +167,33 @@ def parse_ts(obj: dict) -> datetime | None:
     return None
 
 
+_ISSUE_CLONE = re.compile(r"^(.+)-issue-(\d+)$")
+_GROK_WORKTREE = re.compile(
+    r"(?:^|/)\.grok/worktrees/github-([^/]+)/([^/]+)/?$",
+    re.IGNORECASE,
+)
+_SUBAGENT_LEAF = re.compile(r"^subagent-", re.IGNORECASE)
+
+
+def pretty_app_name(short: str, cwd: str = "") -> str:
+    """Human --by app / unlabeled session Key. Does not fold into the parent app."""
+    src = (short or "").strip()
+    text = (cwd or src).replace("\\", "/")
+    for cand in (Path(text).name, Path(src).name, src):
+        if not cand:
+            continue
+        m = _ISSUE_CLONE.match(cand)
+        if m:
+            return f"{m.group(1)}#{m.group(2)}"
+    m = _GROK_WORKTREE.search(text)
+    if m:
+        repo, label = m.group(1), m.group(2)
+        if _SUBAGENT_LEAF.match(label):
+            return f"{repo} (worktree)"
+        return f"{repo} ({label})"
+    return src
+
+
 def project_from_path(updates_path: Path) -> tuple[str, str]:
     """Return (short_app_name, decoded_cwd_or_parent)."""
     parent = updates_path.parent.parent
@@ -177,7 +204,7 @@ def project_from_path(updates_path: Path) -> tuple[str, str]:
         short = decoded.split("GitHub/")[-1].rstrip("/")
     else:
         short = Path(decoded).name or name
-    return short, cwd
+    return pretty_app_name(short, cwd), cwd
 
 
 @dataclass(frozen=True)
@@ -206,13 +233,6 @@ class CreatedPr:
         if self.repo:
             return f"{self.repo}#{n}"
         return f"#{n}"
-
-    @property
-    def short_label(self) -> str:
-        n = self.display_num
-        if self.repo:
-            return f"{self.repo}#{n}"
-        return self.label
 
 
 def _issue_from_text(*texts: str) -> int | None:
@@ -257,6 +277,50 @@ def sorted_pr_labels(labels: Iterable[CreatedPr | str]) -> list[str]:
     return [p.label for p in _as_created_prs(labels)]
 
 
+def short_session_id(session_id: str, *, n: int = 8) -> str:
+    if len(session_id) <= n:
+        return session_id
+    return session_id[:n] + "…"
+
+
+def _collision_id(ident: str, *, n: int = 8) -> str:
+    s = ident
+    if _SUBAGENT_LEAF.match(s):
+        s = s.split("-", 1)[1]
+    return short_session_id(s, n=n)
+
+
+def disambiguate_display_keys(idents: list[str], labels: list[str]) -> list[str]:
+    """Suffix a short id only when two table rows would share a Key."""
+    counts: dict[str, int] = {}
+    for lab in labels:
+        counts[lab] = counts.get(lab, 0) + 1
+    out: list[str] = []
+    for ident, lab in zip(idents, labels, strict=True):
+        if counts[lab] > 1:
+            out.append(f"{lab} · {_collision_id(ident)}")
+        else:
+            out.append(lab)
+    return out
+
+
+def _compact_pr_key(created: list[CreatedPr]) -> str:
+    """Repo #N,N groups, repos ordered by the smallest issue/PR number."""
+    by_repo: dict[str, list[int]] = {}
+    first: dict[str, int] = {}
+    for p in created:
+        repo = p.repo or "repo"
+        by_repo.setdefault(repo, []).append(int(p.display_num))
+        n = int(p.display_num)
+        prev = first.get(repo)
+        first[repo] = n if prev is None else min(prev, n)
+    parts: list[str] = []
+    for repo in sorted(by_repo, key=lambda r: (first[r], r.lower())):
+        nums = ",".join(str(n) for n in sorted(set(by_repo[repo])))
+        parts.append(f"{repo} #{nums}")
+    return " · ".join(parts)
+
+
 def pr_group_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str | None:
     """Table/JSON key for --by pr. Issue and PR numbers in numeric order. Never a session UUID."""
     created = _as_created_prs(prs)
@@ -267,13 +331,7 @@ def pr_group_key(session_id: str, prs: Iterable[CreatedPr | str]) -> str | None:
         if p.issue is not None and p.issue != p.pr:
             return f"{p.label}→#{p.pr}"
         return p.label
-    repos = {(p.owner, p.repo) for p in created}
-    nums = ",".join(str(p.display_num) for p in created)
-    if len(repos) == 1:
-        p0 = created[0]
-        head = p0.repo or "repo"
-        return f"{head} #{nums}"
-    return ", ".join(p.short_label for p in created)
+    return _compact_pr_key(created)
 
 
 def session_display_key(
@@ -288,10 +346,13 @@ def session_display_key(
         head = pr_group_key(session_id, created)
         if head:
             return head
-    app = (project or "").strip()
+    app = pretty_app_name((project or "").strip())
     if app:
         return app
     return session_id
+
+
+UNSPLIT_MULTI_PR_NOTE = "Keys with several PRs are one session; tokens are not split."
 
 
 def _bare_tool_name(name: str) -> str:

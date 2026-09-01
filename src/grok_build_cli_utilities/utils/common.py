@@ -266,10 +266,19 @@ def parse_age_delta(spec: str) -> timedelta:
         return timedelta(days=90)
 
 
-def make_table(title: str, columns: list[str]) -> Table:
+def make_table(
+    title: str,
+    columns: list[str],
+    *,
+    no_wrap: tuple[str, ...] | list[str] = (),
+) -> Table:
     t = Table(title=title, show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
+    pinned = set(no_wrap)
     for c in columns:
-        t.add_column(c)
+        if c in pinned:
+            t.add_column(c, no_wrap=True, overflow="ellipsis")
+        else:
+            t.add_column(c)
     return t
 
 

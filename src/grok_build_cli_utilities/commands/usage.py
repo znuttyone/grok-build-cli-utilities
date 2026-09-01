@@ -44,9 +44,11 @@ from ..utils.usage_faq import COST_CAVEATS_LONG
 from ..utils.usage_tokens import (
     COST_GROUPS,
     TOKEN_REPORT_GROUPS,
+    UNSPLIT_MULTI_PR_NOTE,
     CreatedPr,
     UsageRec,
     allocate_invoice,
+    disambiguate_display_keys,
     filter_usage,
     list_price_usd,
     load_turn_usage,
@@ -234,6 +236,39 @@ def _display_bucket_key(
     return shown[:width] + "…"
 
 
+def _row_display_keys(
+    keys: list[str],
+    group: str,
+    prs_by_session: dict[str, list[CreatedPr]],
+    records: list[UsageRec],
+) -> list[str]:
+    projects = _projects_by_session(records)
+    labels = [
+        _display_bucket_key(
+            key,
+            group,
+            prs_by_session,
+            width=0,
+            projects_by_session=projects,
+        )
+        for key in keys
+    ]
+    return disambiguate_display_keys(keys, labels)
+
+
+def _maybe_print_unsplit_pr_note(
+    group: str,
+    keys: list[str],
+    prs_by_session: dict[str, list[CreatedPr]],
+) -> None:
+    if group != "pr":
+        return
+    for key in keys:
+        if len(_prs_for_bucket(key, group, prs_by_session)) > 1:
+            console.print(f"[dim]{UNSPLIT_MULTI_PR_NOTE}[/dim]")
+            return
+
+
 @app.command("report")
 def report(
     ctx: typer.Context,
@@ -400,19 +435,20 @@ def report(
         t = make_table(
             title,
             ["Key", "Prm", "Tokens", "Cache%", "list$", "est$", "Share(list$)", "Share(tok)"],
+            no_wrap=("Key",),
         )
-        max_list = max((win.list_for_key(b.key) for b in win.buckets[:top]), default=1.0) or 1.0
-        max_tok = max((b.total for b in win.buckets[:top]), default=1) or 1
-        for b in win.buckets[:top]:
+        shown_buckets = win.buckets[:top]
+        row_keys = _row_display_keys(
+            [b.key for b in shown_buckets],
+            group,
+            prs_by_session,
+            records,
+        )
+        max_list = max((win.list_for_key(b.key) for b in shown_buckets), default=1.0) or 1.0
+        max_tok = max((b.total for b in shown_buckets), default=1) or 1
+        for b, key in zip(shown_buckets, row_keys, strict=True):
             list_b = win.list_for_key(b.key)
             est_b = win.est_for_key(b.key)
-            key = _display_bucket_key(
-                b.key,
-                group,
-                prs_by_session,
-                width=0 if group in ("session", "pr") else 56,
-                projects_by_session=_projects_by_session(records),
-            )
             t.add_row(
                 key,
                 str(b.n),
@@ -424,6 +460,7 @@ def report(
                 _ascii_bar(float(b.total), float(max_tok), 12),
             )
         console.print(t)
+        _maybe_print_unsplit_pr_note(group, [b.key for b in shown_buckets], prs_by_session)
         print_token_cost_summary(win, cost_mode=False, show_faq_hint=False)
         from ..utils.usage_tokens import aggregate as _agg
 
@@ -557,7 +594,7 @@ def cost_report(
             "session = repo#issue or project name, never a session UUID. "
             "pr = repo#issue (Fixes #N) or repo#PR; "
             "several PRs stay one row (ProfitGuard #69,71), never split; "
-            "mixed-repo keys sort numbers (7, 8, 14, 15); "
+            "mixed-repo keys compact (ProfitGuard #7,8,14 · grok-build-cli-utilities #15); "
             "no session UUID in the pr key; "
             "sessions with no created PR are omitted unless --include-unlabeled"
         ),
@@ -981,19 +1018,20 @@ def cost_report(
     t = make_table(
         f"Estimated Cost by {by} (list$ primary · est$=path scale){period}",
         headers,
+        no_wrap=("Key",),
     )
-    share_vals = [win.list_for_key(b.key) for b in buckets[:top]]
+    shown_buckets = buckets[:top]
+    row_keys = _row_display_keys(
+        [b.key for b in shown_buckets],
+        by,
+        prs_by_session,
+        records,
+    )
+    share_vals = [win.list_for_key(b.key) for b in shown_buckets]
     max_share = max(share_vals, default=1.0) or 1.0
-    for b in buckets[:top]:
+    for b, key in zip(shown_buckets, row_keys, strict=True):
         list_b = win.list_for_key(b.key)
         est_b = win.est_for_key(b.key)
-        key = _display_bucket_key(
-            b.key,
-            by,
-            prs_by_session,
-            width=0 if by in ("session", "pr") else 56,
-            projects_by_session=_projects_by_session(records),
-        )
         cells: list[str] = [
             key,
             str(b.n),
@@ -1010,6 +1048,7 @@ def cost_report(
         cells.append(_ascii_bar(list_b, max_share, 12))
         t.add_row(*cells)
     console.print(t)
+    _maybe_print_unsplit_pr_note(by, [b.key for b in shown_buckets], prs_by_session)
 
     print_token_cost_summary(win, detail=detail, cost_mode=True, show_faq_hint=False)
     if show_invoice:

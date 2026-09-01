@@ -1610,7 +1610,7 @@ def test_pr_group_key_prefers_issue_and_drops_uuid():
     ]
     assert (
         pr_group_key("01a05e3c-dead", mixed)
-        == "grok-build-cli-utilities#15, Blessed-Bits#23, ProfitGuard#81"
+        == "grok-build-cli-utilities #15 · Blessed-Bits #23 · ProfitGuard #81"
     )
 
 
@@ -1627,7 +1627,7 @@ def test_pr_group_key_sorts_mixed_repos_by_number():
         CreatedPr("znuttyone", "ProfitGuard", pr=81, issue=8),
         CreatedPr("znuttyone", "ProfitGuard", pr=82, issue=14),
     ]
-    expect = "ProfitGuard#7, ProfitGuard#8, ProfitGuard#14, grok-build-cli-utilities#15"
+    expect = "ProfitGuard #7,8,14 · grok-build-cli-utilities #15"
     assert pr_group_key("01a05e3c-dead", mixed) == expect
     assert pr_group_key("01a05e3c-dead", list(reversed(mixed))) == expect
     assert sorted_pr_labels(mixed) == [
@@ -1706,9 +1706,9 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
     assert r.exit_code == 0, r.output
     blob = r.output + (r.stdout or "")
     compact = " ".join(blob.split())
-    assert compact.find("ProfitGuard#7") < compact.find("ProfitGuard#8")
-    assert compact.find("ProfitGuard#8") < compact.find("ProfitGuard#14")
-    assert compact.find("ProfitGuard#14") < compact.find("grok-build-cli-utilities#15")
+    mixed_key = "ProfitGuard #7,8,14 · grok-build-cli-utilities #15"
+    assert mixed_key in compact
+    assert "ProfitGuard#14" not in compact.split(mixed_key)[-1]
     by_pr = _json_from_cli(
         runner.invoke(
             app,
@@ -1727,9 +1727,7 @@ def test_usage_cost_by_session_table_sorts_mixed_repo_numbers(tmp_path: Path):
             ],
         )
     )
-    assert by_pr["buckets"][0]["key"] == (
-        "ProfitGuard#7, ProfitGuard#8, ProfitGuard#14, grok-build-cli-utilities#15"
-    )
+    assert by_pr["buckets"][0]["key"] == ("ProfitGuard #7,8,14 · grok-build-cli-utilities #15")
 
 
 def test_usage_cost_by_session_keeps_duplicate_display_keys(tmp_path: Path):
@@ -1763,9 +1761,9 @@ def test_usage_cost_by_session_keeps_duplicate_display_keys(tmp_path: Path):
     r = runner.invoke(app, args)
     assert r.exit_code == 0, r.output
     blob = r.output + (r.stdout or "")
-    assert blob.count("ProfitGuard-issue-69") >= 2
-    assert "sid-a" not in blob
-    assert "sid-b" not in blob
+    assert "ProfitGuard#69 · sid-a" in blob
+    assert "ProfitGuard#69 · sid-b" in blob
+    assert "ProfitGuard-issue-69" not in blob
 
 
 def test_usage_cost_by_pr_uses_fixes_issue(tmp_path: Path):
@@ -1814,3 +1812,170 @@ def test_usage_cost_by_pr_uses_fixes_issue(tmp_path: Path):
     blob = json.dumps(data)
     assert "#58" not in blob
     assert "01a0" not in data["buckets"][0]["key"]
+
+
+def test_pretty_app_name_worktree_and_issue_clone():
+    from grok_build_cli_utilities.utils.usage_tokens import pretty_app_name
+
+    wt = (
+        "/Users/brunnr/.grok/worktrees/github-grok-build-cli-utilities/"
+        "subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
+    )
+    assert pretty_app_name("subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1", wt) == (
+        "grok-build-cli-utilities (worktree)"
+    )
+    labeled = "/Users/brunnr/.grok/worktrees/github-grok-build-cli-utilities/update-for-46"
+    assert pretty_app_name("update-for-46", labeled) == ("grok-build-cli-utilities (update-for-46)")
+    assert (
+        pretty_app_name(
+            "Blessed-Bits-issue-9",
+            "/Users/brunnr/Documents/GitHub/Blessed-Bits-issue-9",
+        )
+        == "Blessed-Bits#9"
+    )
+    assert (
+        pretty_app_name("Blessed-Bits", "/Users/brunnr/Documents/GitHub/Blessed-Bits")
+        == "Blessed-Bits"
+    )
+
+
+def test_project_from_path_pretty_names(tmp_path: Path):
+    from grok_build_cli_utilities.utils.usage_tokens import project_from_path
+
+    def _touch(encoded: str) -> Path:
+        p = tmp_path / "sessions" / encoded / "sid" / "updates.jsonl"
+        p.parent.mkdir(parents=True)
+        p.write_text("")
+        return p
+
+    wt = (
+        "%2FUsers%2Fbrunnr%2F.grok%2Fworktrees%2Fgithub-grok-build-cli-utilities"
+        "%2Fsubagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
+    )
+    short, cwd = project_from_path(_touch(wt))
+    assert short == "grok-build-cli-utilities (worktree)"
+    assert cwd.endswith("subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1")
+
+    issue = "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FBlessed-Bits-issue-9"
+    short, _cwd = project_from_path(_touch(issue))
+    assert short == "Blessed-Bits#9"
+
+    parent = "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FBlessed-Bits"
+    short, _cwd = project_from_path(_touch(parent))
+    assert short == "Blessed-Bits"
+
+
+def test_disambiguate_display_keys_collision_suffix():
+    from grok_build_cli_utilities.utils.usage_tokens import disambiguate_display_keys
+
+    uniq = disambiguate_display_keys(["a", "b"], ["ProfitGuard #69,71", "Blessed-Bits#9"])
+    assert uniq == ["ProfitGuard #69,71", "Blessed-Bits#9"]
+    collided = disambiguate_display_keys(
+        ["01a05e3c-deadbeef", "01a05e3d-cafe"],
+        ["Blessed-Bits#22", "Blessed-Bits#22"],
+    )
+    assert collided == [
+        "Blessed-Bits#22 · 01a05e3c…",
+        "Blessed-Bits#22 · 01a05e3d…",
+    ]
+
+
+def test_pr_group_key_mixed_compact():
+    from grok_build_cli_utilities.utils.usage_tokens import CreatedPr, pr_group_key
+
+    mixed = [
+        CreatedPr("znuttyone", "ProfitGuard", pr=80, issue=7),
+        CreatedPr("znuttyone", "ProfitGuard", pr=81, issue=8),
+        CreatedPr("znuttyone", "ProfitGuard", pr=82, issue=14),
+        CreatedPr("cobusgreyling", "grok-build-cli-utilities", pr=15, issue=None),
+    ]
+    assert pr_group_key("sid", mixed) == "ProfitGuard #7,8,14 · grok-build-cli-utilities #15"
+
+
+def test_usage_cost_by_app_pretty_keeps_parent_separate(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    paths = {
+        ("%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fgrok-build-cli-utilities"): 1_000_000_000,
+        (
+            "%2FUsers%2Fbrunnr%2F.grok%2Fworktrees%2Fgithub-grok-build-cli-utilities"
+            "%2Fsubagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
+        ): 2_000_000_000,
+        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FBlessed-Bits-issue-9": 3_000_000_000,
+        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2FProfitGuard-issue-79": 4_000_000_000,
+    }
+    for i, (encoded, ticks) in enumerate(paths.items()):
+        _write_turn(
+            grok / "sessions" / encoded / f"s{i}" / "updates.jsonl",
+            prompt_id=f"p{i}",
+            ts="2026-08-02T12:00:00Z",
+            input_t=100,
+            output_t=1,
+            cached=0,
+            reasoning=0,
+            ticks=ticks,
+        )
+    data = _json_from_cli(
+        runner.invoke(
+            app,
+            [
+                "-g",
+                str(grok),
+                "usage",
+                "cost",
+                "--from",
+                "2026-08-01",
+                "--to",
+                "2026-08-05",
+                "--by",
+                "app",
+                "--json",
+            ],
+        )
+    )
+    keys = {b["key"] for b in data["buckets"]}
+    assert "grok-build-cli-utilities" in keys
+    assert "grok-build-cli-utilities (worktree)" in keys
+    assert "Blessed-Bits#9" in keys
+    assert "ProfitGuard#79" in keys
+    assert "Blessed-Bits-issue-9" not in keys
+    assert "ProfitGuard-issue-79" not in keys
+    assert not any(k.startswith("subagent-") for k in keys)
+
+
+def test_usage_cost_by_pr_prints_unsplit_note(tmp_path: Path):
+    from grok_build_cli_utilities.utils.usage_tokens import UNSPLIT_MULTI_PR_NOTE
+
+    grok = tmp_path / ".grok"
+    sid = "01a059cb-5e07-7893-aab3-bad45b49c8ab"
+    upd = grok / "sessions" / "ProfitGuard" / sid / "updates.jsonl"
+    _write_turn(
+        upd,
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=8_000_000_000,
+    )
+    _append_update(upd, _mcp_create_pr_update(session_id=sid, number=70))
+    _append_update(upd, _mcp_create_pr_update(session_id=sid, number=72, ts="2026-08-02T13:00:00Z"))
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-01",
+            "--to",
+            "2026-08-05",
+            "--by",
+            "pr",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    blob = r.output + (r.stdout or "")
+    assert UNSPLIT_MULTI_PR_NOTE in blob
+    assert "ProfitGuard #70,72" in blob
