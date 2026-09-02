@@ -24,7 +24,7 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 | **Plan (SuperGrok vs Heavy)** | billing log / footer / `-P` | `ctx.subscriptionTier` on billing fetch lines | Labels mix + planner; not list$ |
 | **Wallet / auth line** | `usage cost` / `usage report` footer | `Extra Credits $… · weekly N% · Heavy session` plus **Weekly Heavy pool resets …** | Snapshot only — see FAQ |
 
-**Auth matters for spend:** SuperGrok/Heavy session wins over `XAI_API_KEY` unless `preferred_method = "api_key"`. Wallet + plan come from billing lines in `logs/unified.jsonl` (`prepaidBalance`, `creditUsagePercent`, `currentPeriod.end`, `subscriptionTier`) — not from `/usage` turn files. The Build `/usage` panel may still say SuperGrok after you upgrade. `resets` is `currentPeriod.end` in local time (same clock as `/usage` “Resets”).
+**Auth matters for spend:** SuperGrok/Heavy session wins over `XAI_API_KEY` unless `preferred_method = "api_key"`. Wallet + plan come from billing lines in `logs/unified.jsonl` (`prepaidBalance`, `creditUsagePercent`, `currentPeriod.end`, `subscriptionTier`) — not from `/usage` turn files. The Build `/usage` panel may still say SuperGrok after you upgrade. `resets` is `currentPeriod.end` in local time (same clock as `/usage` “Resets”). `--from` / `--to` use that same local calendar. `--tz UTC` restores a UTC calendar.
 
 **What to use when**
 
@@ -128,6 +128,7 @@ Built-in (unless you force a single number):
 cash_scale_api = 1.0
 cash_scale_supergrok_pool = 0.0
 cash_scale_supergrok_overage = 1.9
+date_tz = "local"                       # or "UTC" / "America/New_York"; CLI --tz wins
 topoff_discount = 0.0                   # 0 full price; 0.25 / 1.0 to model promo
 topoff_discount_scenarios = [0.20, 0.25, 0.40]
 ```
@@ -136,7 +137,8 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 
 | Flag | Meaning |
 |---|---|
-| `--from` / `--to` / `--since` | Inclusive dates; omit `--to` for through **latest** session data (`--since` = `--from`). If `--from` is earlier than any turn in the logs, a warning shows the real earliest date (table title uses the data span). |
+| `--from` / `--to` / `--since` | Inclusive **local** calendar dates (same clock as weekly resets / Build `/usage`). Omit `--to` for through **latest** session data (`--since` = `--from`). If `--from` is earlier than any turn in the logs, a warning shows the real earliest date (table title uses the data span). |
+| `--tz` | Calendar zone for `--from` / `--to` / `--since` and `--by day`. `local` (default) \| `UTC` \| IANA (`America/New_York`). CLI wins over `[usage] date_tz`. |
 | `--by` | `app` \| `project` \| `model` \| `day` \| `week` \| `month` \| `session` \| `pr` |
 | `--include-unlabeled` | With `--by pr`, also list sessions that never created a PR (keyed by session id). Default omit. |
 | `-m` / `--rates-model` | Force a reconstructed rate table for **list$** (ignores ticks). Omit to use `/usage` Session Cost (`costUsdTicks÷1e10`). Fallback table: `grok-4.6` |

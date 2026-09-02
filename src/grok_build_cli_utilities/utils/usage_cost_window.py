@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime
+from datetime import date, datetime, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +106,7 @@ def build_token_cost_window(
     result_latest: date | None = None,
     prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
+    date_tz: tzinfo | None = None,
 ) -> TokenCostWindow:
     """Build list$/est$ for filtered records (shared by cost + report)."""
     # Omit --rates-model → prefer costUsdTicks (same $ as Build /usage Cost).
@@ -132,6 +133,7 @@ def build_token_cost_window(
         group,
         prs_by_session=prs_by_session,
         include_unlabeled=include_unlabeled,
+        tz=date_tz,
     )
     tot = total_bucket(records)
     list_seed = tot.list_usd(rates, prefer_ticks=prefer_ticks)
@@ -158,6 +160,7 @@ def build_token_cost_window(
             group,
             prs_by_session=prs_by_session,
             include_unlabeled=include_unlabeled,
+            tz=date_tz,
         )
         return k if k is not None else (r.session_id or "unknown")
 

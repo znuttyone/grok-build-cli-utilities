@@ -127,6 +127,16 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
      - "How much is left / weekly pool?" → Extra Credits $ + weekly % (auth status)
      - "Which plan if I keep this pace?" → usage cost --plan-advisor (-P)
 
+  Q: Why is --from a local date?
+  A: A YYYY-MM-DD with no time is a day on the machine in front of you.
+     Weekly pool resets already print in local time to match Build /usage.
+     --from / --to use that same clock, so work at 11:51 PM stays on that
+     local day. UTC used to put 11:51 PM ET on the next UTC day, which
+     looked like a missing session. It was a timezone cut.
+     --tz UTC restores the old UTC calendar. --tz America/New_York (IANA)
+     or [usage] date_tz in grok-utils.toml pins a zone. CLI --tz wins.
+     Default is local when neither is set.
+
   Q: Why is --by session or --by pr still the folder name?
   A: PR-level Keys and clean session labels appear only when the Grok Build
      session reports them. If you skip this, you still get --by app (the

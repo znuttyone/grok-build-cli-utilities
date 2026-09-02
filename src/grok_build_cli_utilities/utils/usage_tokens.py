@@ -6,8 +6,9 @@ import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rich.progress import Progress
 
@@ -683,17 +684,77 @@ def load_turn_usage(
     return sorted(by_prompt.values(), key=lambda r: r.ts)
 
 
+def local_tz() -> tzinfo:
+    """Process-local zone (the machine in front of you)."""
+    tz = datetime.now().astimezone().tzinfo
+    return tz if tz is not None else timezone.utc
+
+
+def parse_date_tz(name: str) -> tzinfo:
+    """Parse ``local``, ``UTC``, or an IANA zone name."""
+    key = name.strip()
+    if not key or key.lower() == "local":
+        return local_tz()
+    if key.upper() == "UTC":
+        return timezone.utc
+    try:
+        return ZoneInfo(key)
+    except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:
+        raise ValueError(
+            f"unknown timezone {name!r} (use local, UTC, or an IANA name such as America/New_York)"
+        ) from exc
+
+
+def date_tz_label(raw: str | None) -> str:
+    """Stable JSON/help label for the calendar zone that was requested."""
+    if raw is None:
+        return "local"
+    key = raw.strip()
+    if not key or key.lower() == "local":
+        return "local"
+    if key.upper() == "UTC":
+        return "UTC"
+    return key
+
+
+def resolve_usage_date_tz(
+    *,
+    cli: str | None = None,
+    config: str | None = None,
+) -> tuple[tzinfo, str]:
+    """CLI ``--tz`` wins over ``[usage] date_tz``. Default is local."""
+    chosen: str | None = None
+    if isinstance(cli, str) and cli.strip():
+        chosen = cli
+    elif isinstance(config, str) and config.strip():
+        chosen = config
+    return parse_date_tz(chosen or "local"), date_tz_label(chosen)
+
+
+def usage_local_dt(ts: datetime, tz: tzinfo) -> datetime:
+    """Convert a turn timestamp into the usage calendar zone."""
+    aware = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+    return aware.astimezone(tz)
+
+
+def usage_calendar_date(ts: datetime, tz: tzinfo) -> date:
+    """Calendar date of a turn in the usage zone. Do not use UTC ``.date()``."""
+    return usage_local_dt(ts, tz).date()
+
+
 def filter_usage(
     records: list[UsageRec],
     *,
     date_from: date | None = None,
     date_to: date | None = None,
     apps: list[str] | None = None,
+    tz: tzinfo | None = None,
 ) -> list[UsageRec]:
+    zone = tz if tz is not None else local_tz()
     out: list[UsageRec] = []
     needles = [a.lower() for a in apps] if apps else None
     for r in records:
-        d = r.ts.date()
+        d = usage_calendar_date(r.ts, zone)
         if date_from is not None and d < date_from:
             continue
         if date_to is not None and d > date_to:
@@ -713,19 +774,21 @@ def bucket_key(
     *,
     prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
+    tz: tzinfo | None = None,
 ) -> str | None:
     if group in ("app", "project"):
         # app = short folder name; project = full cwd (disambiguates same name in different paths)
         return r.project if group == "app" else (r.cwd or r.project)
     if group == "model":
         return r.model or "unknown"
-    if group == "day":
-        return r.ts.date().isoformat()
-    if group == "week":
-        iso = r.ts.isocalendar()
-        return f"{iso.year}-W{iso.week:02d}"
-    if group == "month":
-        return f"{r.ts.year}-{r.ts.month:02d}"
+    if group in ("day", "week", "month"):
+        local = usage_local_dt(r.ts, tz if tz is not None else local_tz())
+        if group == "day":
+            return local.date().isoformat()
+        if group == "week":
+            iso = local.isocalendar()
+            return f"{iso.year}-W{iso.week:02d}"
+        return f"{local.year}-{local.month:02d}"
     if group == "session":
         return r.session_id or "unknown"
     if group == "pr":
@@ -745,7 +808,9 @@ def aggregate(
     *,
     prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
+    tz: tzinfo | None = None,
 ) -> list[UsageBucket]:
+    zone = tz if tz is not None else local_tz()
     m: dict[str, UsageBucket] = {}
     for r in records:
         k = bucket_key(
@@ -753,6 +818,7 @@ def aggregate(
             group,
             prs_by_session=prs_by_session,
             include_unlabeled=include_unlabeled,
+            tz=zone,
         )
         if k is None:
             continue

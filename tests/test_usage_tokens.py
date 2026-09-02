@@ -26,14 +26,17 @@ from grok_build_cli_utilities.utils.pricing import (
 )
 from grok_build_cli_utilities.utils.usage_tokens import (
     PaygoTypeUsd,
+    UsageRec,
     aggregate,
     allocate_invoice,
     allocate_paygo,
     allocate_paygo_by_type,
+    bucket_key,
     filter_usage,
     load_turn_usage,
     pr_group_key,
     pr_labels_from_update,
+    resolve_usage_date_tz,
     scan_pr_creates,
     total_bucket,
 )
@@ -302,7 +305,9 @@ def test_load_dedupe_and_filter(tmp_path: Path):
 
     recs = load_turn_usage(tmp_path / "sessions")
     assert len(recs) == 3  # p1 kept max, p2, p3
-    filtered = filter_usage(recs, date_from=date(2026, 8, 1), date_to=date(2026, 8, 5))
+    filtered = filter_usage(
+        recs, date_from=date(2026, 8, 1), date_to=date(2026, 8, 5), tz=timezone.utc
+    )
     assert len(filtered) == 2
     assert all(r.project == "notes" for r in filtered)
 
@@ -1991,3 +1996,209 @@ def test_usage_cost_by_pr_prints_unsplit_note(tmp_path: Path):
     blob = r.output + (r.stdout or "")
     assert UNSPLIT_MULTI_PR_NOTE in blob
     assert "widgets #70,72" in blob
+
+
+def _late_et_turn(tmp_path: Path) -> Path:
+    """Turn at 11:51 PM ET 2026-09-01, stored as 2026-09-02T03:51:00Z."""
+    grok = tmp_path / ".grok"
+    sess = grok / "sessions" / "notes" / "s1"
+    _write_turn(
+        sess / "updates.jsonl",
+        prompt_id="p1",
+        ts="2026-09-02T03:51:00Z",
+        input_t=100,
+        output_t=10,
+        cached=0,
+        reasoning=0,
+        ticks=1_000_000_000,
+    )
+    return grok
+
+
+def test_filter_usage_local_calendar_not_utc_date():
+    from zoneinfo import ZoneInfo
+
+    rec = UsageRec(
+        prompt_id="p1",
+        ts=datetime(2026, 9, 2, 3, 51, tzinfo=timezone.utc),
+        project="notes",
+        cwd="/notes",
+        session_id="s1",
+    )
+    ny = ZoneInfo("America/New_York")
+    assert filter_usage([rec], date_from=date(2026, 9, 2), tz=ny) == []
+    assert filter_usage([rec], date_from=date(2026, 9, 1), tz=ny) == [rec]
+    assert filter_usage([rec], date_from=date(2026, 9, 2), tz=timezone.utc) == [rec]
+
+
+def test_bucket_key_day_matches_filter_zone():
+    from zoneinfo import ZoneInfo
+
+    rec = UsageRec(
+        prompt_id="p1",
+        ts=datetime(2026, 9, 2, 3, 51, tzinfo=timezone.utc),
+        project="notes",
+        cwd="/notes",
+        session_id="s1",
+    )
+    ny = ZoneInfo("America/New_York")
+    assert bucket_key(rec, "day", tz=ny) == "2026-09-01"
+    assert bucket_key(rec, "day", tz=timezone.utc) == "2026-09-02"
+    assert bucket_key(rec, "month", tz=ny) == "2026-09"
+
+
+def test_resolve_usage_date_tz_cli_wins_over_config():
+    from zoneinfo import ZoneInfo
+
+    _tz, label = resolve_usage_date_tz(cli=None, config=None)
+    assert label == "local"
+    tz, label = resolve_usage_date_tz(cli=None, config="UTC")
+    assert tz is timezone.utc
+    assert label == "UTC"
+    tz, label = resolve_usage_date_tz(cli="America/New_York", config="UTC")
+    assert tz == ZoneInfo("America/New_York")
+    assert label == "America/New_York"
+    _tz, label = resolve_usage_date_tz(cli="local", config="UTC")
+    assert label == "local"
+
+
+def test_usage_cost_from_local_calendar_excludes_utc_next_day(tmp_path: Path):
+    grok = _late_et_turn(tmp_path)
+    base = ["-g", str(grok), "usage", "cost", "--json", "--by", "day"]
+
+    ny_next = runner.invoke(app, [*base, "--from", "2026-09-02", "--tz", "America/New_York"])
+    assert ny_next.exit_code == 0, ny_next.output
+    assert "{" not in (ny_next.stdout or ny_next.output or "")
+
+    ny_same = runner.invoke(app, [*base, "--from", "2026-09-01", "--tz", "America/New_York"])
+    data = _json_from_cli(ny_same)
+    assert data["date_tz"] == "America/New_York"
+    assert data["totals"]["prompts"] == 1
+    assert data["buckets"][0]["key"] == "2026-09-01"
+    assert data["result_from"] == "2026-09-01"
+
+    utc = runner.invoke(app, [*base, "--from", "2026-09-02", "--tz", "UTC"])
+    data = _json_from_cli(utc)
+    assert data["date_tz"] == "UTC"
+    assert data["totals"]["prompts"] == 1
+    assert data["buckets"][0]["key"] == "2026-09-02"
+    assert data["result_from"] == "2026-09-02"
+
+
+def test_usage_report_from_local_calendar_and_date_tz_json(tmp_path: Path):
+    grok = _late_et_turn(tmp_path)
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "report",
+            "--from",
+            "2026-09-02",
+            "--tz",
+            "America/New_York",
+            "--json",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "{" not in (r.stdout or r.output or "")
+
+    r2 = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "report",
+            "--from",
+            "2026-09-02",
+            "--tz",
+            "UTC",
+            "--json",
+        ],
+    )
+    data = _json_from_cli(r2)
+    assert data["date_tz"] == "UTC"
+    assert data["totals"]["prompts"] == 1
+
+
+def test_usage_date_tz_config_and_cli_override(tmp_path: Path):
+    grok = _late_et_turn(tmp_path)
+    (grok / "grok-utils.toml").write_text('[usage]\ndate_tz = "UTC"\n', encoding="utf-8")
+    r = runner.invoke(
+        app,
+        ["-g", str(grok), "usage", "cost", "--from", "2026-09-02", "--json"],
+    )
+    data = _json_from_cli(r)
+    assert data["date_tz"] == "UTC"
+    assert data["totals"]["prompts"] == 1
+
+    r2 = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-09-02",
+            "--tz",
+            "America/New_York",
+            "--json",
+        ],
+    )
+    assert r2.exit_code == 0, r2.output
+    assert "{" not in (r2.stdout or r2.output or "")
+
+
+def test_usage_cost_default_date_tz_is_local(tmp_path: Path):
+    grok = _late_et_turn(tmp_path)
+    r = runner.invoke(
+        app,
+        ["-g", str(grok), "usage", "cost", "--from", "2026-09-01", "--to", "2026-09-02", "--json"],
+    )
+    data = _json_from_cli(r)
+    assert data["date_tz"] == "local"
+    assert data["totals"]["prompts"] == 1
+
+
+def test_usage_unknown_tz_exits(tmp_path: Path):
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(tmp_path / ".grok"),
+            "usage",
+            "cost",
+            "--from",
+            "2026-09-01",
+            "--tz",
+            "Not/AZone",
+        ],
+    )
+    assert r.exit_code != 0
+    blob = (r.output or "") + (r.stderr or "")
+    assert "Not/AZone" in blob
+
+
+def test_usage_cost_help_from_is_local_calendar():
+    r = runner.invoke(app, ["usage", "cost", "--help"])
+    assert r.exit_code == 0, r.output
+    text = r.output.lower()
+    assert "local calendar" in text
+    assert "--tz" in r.output
+    assert "utc" in text
+    assert "usage.date_tz" in r.output
+    r2 = runner.invoke(app, ["usage", "report", "--help"])
+    assert r2.exit_code == 0, r2.output
+    assert "local calendar" in r2.output.lower()
+    assert "--tz" in r2.output
+
+
+def test_usage_info_explains_local_from():
+    r = runner.invoke(app, ["usage", "info"])
+    assert r.exit_code == 0, r.output
+    assert "Why is --from a local date?" in r.output
+    assert "--tz UTC" in r.output
+    assert "weekly pool resets" in r.output.lower() or "Weekly pool resets" in r.output

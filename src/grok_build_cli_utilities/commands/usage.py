@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 import typer
@@ -25,6 +25,7 @@ from ..utils.pricing import (
     effective_rates,
     list_rate_profiles,
     load_plan_advisor_config,
+    load_usage_config,
     plan_advisor,
     resolve_topoff_discount_scenarios,
     resolve_topoff_pack_usd,
@@ -54,12 +55,29 @@ from ..utils.usage_tokens import (
     load_turn_usage,
     parse_iso_date,
     pr_group_key,
+    resolve_usage_date_tz,
     session_display_key,
     sorted_pr_labels,
+    usage_calendar_date,
 )
 from .usage_legacy import print_cost_rough, print_legacy_session_report
 
 app = typer.Typer(help="Usage reports, leaderboards and trends", no_args_is_help=True)
+
+_FROM_HELP = (
+    "Inclusive local calendar start YYYY-MM-DD. Same clock as weekly resets "
+    "and Build /usage. Omit --to for through latest"
+)
+_TO_HELP = (
+    "Inclusive local calendar end YYYY-MM-DD. Same clock as --from. "
+    "Omit for through latest session data"
+)
+_SINCE_HELP = "Alias for --from (local calendar YYYY-MM-DD)"
+_TZ_HELP = (
+    "Calendar zone for --from/--to/--since and --by day. "
+    "local (default) | UTC | IANA (America/New_York). "
+    "CLI wins over usage.date_tz in grok-utils.toml"
+)
 
 
 def _sparkline(values: list[int], width: int = 20) -> str:
@@ -84,12 +102,23 @@ def _fmt_tokens(n: int) -> str:
     return fmt_tokens(n)
 
 
-def _data_date_span(records: list[UsageRec]) -> tuple[date | None, date | None]:
-    """Earliest and latest turn dates in records (local calendar date)."""
+def _data_date_span(records: list[UsageRec], tz: tzinfo) -> tuple[date | None, date | None]:
+    """Earliest and latest turn dates in the usage calendar zone."""
     if not records:
         return None, None
-    days = [r.ts.date() for r in records]
+    days = [usage_calendar_date(r.ts, tz) for r in records]
     return min(days), max(days)
+
+
+def _resolve_date_tz(grok_home: Path, cli_tz: str | None) -> tuple[tzinfo, str]:
+    cfg = load_usage_config(grok_home)
+    raw = cfg.get("date_tz")
+    cfg_tz = raw.strip() if isinstance(raw, str) else None
+    try:
+        return resolve_usage_date_tz(cli=cli_tz, config=cfg_tz)
+    except ValueError as exc:
+        _warn_stderr(str(exc))
+        raise typer.Exit(code=1) from exc
 
 
 def _warn_stderr(msg: str) -> None:
@@ -108,6 +137,7 @@ def _load_filtered_usage(
     date_from: str | None,
     date_to: str | None,
     apps: list[str] | None,
+    tz: tzinfo,
 ) -> tuple[
     list[UsageRec],
     date | None,
@@ -152,8 +182,8 @@ def _load_filtered_usage(
             warn(f"Ignoring bad --since {since}")
 
     # Universe for span checks: app filter only (ignore date window)
-    base = filter_usage(records, apps=apps) if apps else records
-    earliest, latest = _data_date_span(base)
+    base = filter_usage(records, apps=apps, tz=tz) if apps else records
+    earliest, latest = _data_date_span(base, tz)
 
     if d_from is not None and earliest is not None and d_from < earliest:
         _warn_stderr(
@@ -177,7 +207,7 @@ def _load_filtered_usage(
             f"({earliest.isoformat()}). No turns match this window."
         )
 
-    filtered = filter_usage(records, date_from=d_from, date_to=d_to, apps=apps)
+    filtered = filter_usage(records, date_from=d_from, date_to=d_to, apps=apps, tz=tz)
     return filtered, d_from, d_to, earliest, latest, prs_by_session
 
 
@@ -272,13 +302,10 @@ def _maybe_print_unsplit_pr_note(
 @app.command("report")
 def report(
     ctx: typer.Context,
-    since: str | None = typer.Option(None, "--since", help="Alias for --from"),
-    date_from: str | None = typer.Option(
-        None, "--from", help="Inclusive start YYYY-MM-DD (omit --to for through latest)"
-    ),
-    date_to: str | None = typer.Option(
-        None, "--to", help="Inclusive end YYYY-MM-DD (omit for through latest session data)"
-    ),
+    since: str | None = typer.Option(None, "--since", metavar="DATE", help=_SINCE_HELP),
+    date_from: str | None = typer.Option(None, "--from", metavar="DATE", help=_FROM_HELP),
+    date_to: str | None = typer.Option(None, "--to", metavar="DATE", help=_TO_HELP),
+    tz: str | None = typer.Option(None, "--tz", metavar="ZONE", help=_TZ_HELP),
     by: str = typer.Option(
         "app",
         "--by",
@@ -328,6 +355,7 @@ def report(
     (message counts, not list$/est$). Share bars use list$ on the token path.
     """
     grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
+    date_tz, date_tz_label = _resolve_date_tz(grok_home, tz)
 
     # --by app|session|pr implies token path; --tokens is only meaningful otherwise
     if tokens and by in ("app", "session", "pr"):
@@ -342,13 +370,13 @@ def report(
     if use_tokens:
         group = by if by in TOKEN_REPORT_GROUPS else "app"
         records, d_from, d_to, data_earliest, data_latest, prs_by_session = _load_filtered_usage(
-            grok_home, since=since, date_from=date_from, date_to=date_to, apps=None
+            grok_home, since=since, date_from=date_from, date_to=date_to, apps=None, tz=date_tz
         )
         records = _records_for_group(records, group, prs_by_session, include_unlabeled=False)
         if not records:
             warn("No turn usage data for report (try without --tokens for summary-based report).")
             return
-        result_earliest, result_latest = _data_date_span(records)
+        result_earliest, result_latest = _data_date_span(records, date_tz)
         win = build_token_cost_window(
             grok_home,
             records,
@@ -362,6 +390,7 @@ def report(
             result_earliest=result_earliest,
             result_latest=result_latest,
             prs_by_session=prs_by_session,
+            date_tz=date_tz,
         )
 
         if json_out:
@@ -386,6 +415,7 @@ def report(
                         "by": group,
                         "from": d_from.isoformat() if d_from else None,
                         "to": d_to.isoformat() if d_to else None,
+                        "date_tz": date_tz_label,
                         "result_from": (result_earliest.isoformat() if result_earliest else None),
                         "result_to": (result_latest.isoformat() if result_latest else None),
                         "rates_model": win.rates_label,
@@ -570,21 +600,10 @@ def cost_info() -> None:
 @app.command("cost")
 def cost_report(
     ctx: typer.Context,
-    since: str | None = typer.Option(
-        None, "--since", metavar="DATE", help="Alias for --from (YYYY-MM-DD)"
-    ),
-    date_from: str | None = typer.Option(
-        None,
-        "--from",
-        metavar="DATE",
-        help="Inclusive start YYYY-MM-DD (omit --to for through latest)",
-    ),
-    date_to: str | None = typer.Option(
-        None,
-        "--to",
-        metavar="DATE",
-        help="Inclusive end YYYY-MM-DD (omit for through latest session data)",
-    ),
+    since: str | None = typer.Option(None, "--since", metavar="DATE", help=_SINCE_HELP),
+    date_from: str | None = typer.Option(None, "--from", metavar="DATE", help=_FROM_HELP),
+    date_to: str | None = typer.Option(None, "--to", metavar="DATE", help=_TO_HELP),
+    tz: str | None = typer.Option(None, "--tz", metavar="ZONE", help=_TZ_HELP),
     by: str = typer.Option(
         "app",
         "--by",
@@ -779,6 +798,7 @@ def cost_report(
     """
 
     grok_home = get_grok_home(ctx.obj.get("grok_home") if ctx.obj else None)
+    date_tz, date_tz_label = _resolve_date_tz(grok_home, tz)
 
     if mode == "rough":
         print_cost_rough(
@@ -798,7 +818,7 @@ def cost_report(
         include_unlabeled = False
 
     records, d_from, d_to, data_earliest, data_latest, prs_by_session = _load_filtered_usage(
-        grok_home, since=since, date_from=date_from, date_to=date_to, apps=app
+        grok_home, since=since, date_from=date_from, date_to=date_to, apps=app, tz=date_tz
     )
     had_turns = bool(records)
     records = _records_for_group(records, by, prs_by_session, include_unlabeled=include_unlabeled)
@@ -814,7 +834,7 @@ def cost_report(
             warn("Tip: try --mode rough for legacy summary-based estimate, or check --from/--to.")
         return
 
-    result_earliest, result_latest = _data_date_span(records)
+    result_earliest, result_latest = _data_date_span(records, date_tz)
     win = build_token_cost_window(
         grok_home,
         records,
@@ -832,6 +852,7 @@ def cost_report(
         result_latest=result_latest,
         prs_by_session=prs_by_session,
         include_unlabeled=include_unlabeled,
+        date_tz=date_tz,
     )
     rates = win.rates
     rates_label = win.rates_label
@@ -923,7 +944,7 @@ def cost_report(
                 row["prs"] = prs
             top_rows.append(row)
 
-        weeks = week_list_series(records, rates, prefer_ticks=win.prefer_ticks)
+        weeks = week_list_series(records, rates, prefer_ticks=win.prefer_ticks, tz=date_tz)
         pack_usd = resolve_topoff_pack_usd(usage_cfg)
         ov_scale = cfg_overage_scale(usage_cfg)
         plan_export = None
@@ -945,6 +966,7 @@ def cost_report(
             "by": by,
             "from": d_from.isoformat() if d_from else None,
             "to": d_to.isoformat() if d_to else None,
+            "date_tz": date_tz_label,
             "data_earliest": data_earliest.isoformat() if data_earliest else None,
             "data_latest": data_latest.isoformat() if data_latest else None,
             "result_from": result_earliest.isoformat() if result_earliest else None,
@@ -1102,7 +1124,7 @@ def cost_report(
             detail=detail,
             mix_slices=list(mix.slices),
             pack_usd=resolve_topoff_pack_usd(usage_cfg),
-            week_list=week_list_series(records, rates),
+            week_list=week_list_series(records, rates, tz=date_tz),
             list_by_key_path=dict(mix.list_by_key_path),
             current_tier=win.subscription_tier,
             window_tiers=list(win.window_tiers),

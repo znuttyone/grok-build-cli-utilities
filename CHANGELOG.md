@@ -21,6 +21,7 @@ All notable changes to grok-build-cli-utilities will be documented in this file.
 - **est$ jumped as `unified.jsonl` grew / truncated**: weekly-timeline compaction moved plateau timestamps forward, so same-week Heavy/SuperGrok pool turns fell *before* the first remaining billing sample and were billed at list$ (`SuperGrok (?)` ×1). Compaction now keeps the earliest timestamp of each weekly-% plateau. Turns before the first sample reuse that sample when it is still in-pool and within 7 days (and label Heavy when the log only ever shows Heavy). First-sample overage still stays unknown @ list$ so historical Extra Credits burn is not zeroed.
 
 ### Changed
+- **`usage --from` / `--to` / `--since`** are inclusive **local** calendar dates by default (same clock as weekly resets / Build `/usage`). Late-evening local work stays on that local day. `--tz UTC` or `--tz America/New_York` (IANA) and `[usage] date_tz` are the escape hatch. `--by day` buckets use the same zone. JSON includes `date_tz`.
 - **`make ci`** is the required local gate before a PR (`ruff` pin `>=0.15.0,<0.16`, `ruff check`, `ruff format --check`, mypy, pytest cov). CONTRIBUTING / docs / PR template no longer treat pytest-green as sufficient.
 - Pre-commit `ruff-pre-commit` hook pinned to **v0.15.22** so local format matches CI.
 - **list$** uses Build **`costUsdTicks ÷ 10^10`** (xAI cost tracking — same $ as `/usage` Session Cost). Pass `-m` to reconstruct from a published rate table instead. Tick conversion was previously ÷1e9 (10× too high).

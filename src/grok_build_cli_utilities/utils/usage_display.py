@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import tzinfo
 from typing import Any
 
 from .auth_status import (
@@ -248,18 +249,20 @@ def week_list_series(
     rates: TokenRates,
     *,
     prefer_ticks: bool = True,
+    tz: tzinfo | None = None,
 ) -> list[tuple[str, float]]:
     """ISO-week list$ totals for variance context (oldest → newest)."""
     from collections import defaultdict
 
-    from .usage_tokens import turn_list_usd
+    from .usage_tokens import local_tz, turn_list_usd, usage_local_dt
 
+    zone = tz if tz is not None else local_tz()
     by_week: dict[str, float] = defaultdict(float)
     for r in records:
         ts = getattr(r, "ts", None)
         if ts is None:
             continue
-        iso = ts.isocalendar()
+        iso = usage_local_dt(ts, zone).isocalendar()
         key = f"{iso.year}-W{iso.week:02d}"
         by_week[key] += float(turn_list_usd(r, rates, prefer_ticks=prefer_ticks))
     return sorted(by_week.items(), key=lambda kv: kv[0])
