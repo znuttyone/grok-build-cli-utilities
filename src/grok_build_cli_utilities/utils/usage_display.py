@@ -22,6 +22,27 @@ from .pricing import (
 from .usage_cost_window import TokenCostWindow
 from .usage_tokens import UsageBucket
 
+DEFAULT_BUCKET_TOP = 10
+
+
+def shown_bucket_count(n_buckets: int, top: int, show_all: bool) -> int:
+    """How many ranked buckets to print. --all wins; --top 0 prints none."""
+    if show_all:
+        return n_buckets
+    return min(n_buckets, max(0, top))
+
+
+def bucket_cut_caption(shown: int, total: int) -> str:
+    if shown >= total:
+        return f"all {total}"
+    return f"top {shown} of {total}"
+
+
+def print_bucket_cut_note(shown: int, total: int) -> None:
+    if shown >= total:
+        return
+    console.print(f"[dim]{bucket_cut_caption(shown, total)} · TOTALS is the whole window[/dim]")
+
 
 def fmt_tokens(n: int) -> str:
     if n >= 1_000_000:

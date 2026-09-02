@@ -127,6 +127,10 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
      - "How much is left / weekly pool?" → Extra Credits $ + weekly % (auth status)
      - "Which plan if I keep this pace?" → usage cost --plan-advisor (-P)
 
+  Q: Why does the cost table show only 10 rows?
+  A: Default is top 10 by list$. --all prints every row.
+     TOTALS is the whole window even when the table is truncated.
+
   Q: Why is --from a local date?
   A: A YYYY-MM-DD with no time is a day on the machine in front of you.
      Weekly pool resets already print in local time to match Build /usage.
@@ -158,6 +162,7 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
 
   Q: Common commands (novice)
   A:  grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6
+      grok-utils usage cost --from 2026-08-01 --by app --all
       grok-utils usage cost --from 2026-08-01 --by session
       grok-utils usage cost --from 2026-08-01 --by pr
       grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6 -P

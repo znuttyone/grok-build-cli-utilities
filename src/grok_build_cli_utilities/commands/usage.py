@@ -32,13 +32,17 @@ from ..utils.pricing import (
 )
 from ..utils.usage_cost_window import api_scale_for_advisor, build_token_cost_window
 from ..utils.usage_display import (
+    DEFAULT_BUCKET_TOP,
+    bucket_cut_caption,
     cfg_overage_scale,
     fmt_tokens,
     format_auth_plan_advisor_line,
     plan_advisor_export,
     print_api_breakdown,
+    print_bucket_cut_note,
     print_plan_advisor,
     print_token_cost_summary,
+    shown_bucket_count,
     week_list_series,
 )
 from ..utils.usage_faq import COST_CAVEATS_LONG
@@ -78,6 +82,8 @@ _TZ_HELP = (
     "local (default) | UTC | IANA (America/New_York). "
     "CLI wins over usage.date_tz in grok-utils.toml"
 )
+_TOP_HELP = "Show top N buckets by list$. --all overrides this."
+_ALL_HELP = "Print every bucket. Overrides --top."
 
 
 def _sparkline(values: list[int], width: int = 20) -> str:
@@ -315,7 +321,8 @@ def report(
             "--tokens required for project/model/day; ignored with --by app|session|pr"
         ),
     ),
-    top: int = typer.Option(10, "--top", help="Show top N"),
+    top: int = typer.Option(DEFAULT_BUCKET_TOP, "--top", metavar="N", help=_TOP_HELP),
+    show_all: bool = typer.Option(False, "--all", help=_ALL_HELP),
     tokens: bool = typer.Option(
         False,
         "--tokens",
@@ -393,11 +400,15 @@ def report(
             date_tz=date_tz,
         )
 
+        shown_n = shown_bucket_count(len(win.buckets), top, show_all)
+        shown_buckets = win.buckets[:shown_n]
+        cut = bucket_cut_caption(shown_n, len(win.buckets))
+
         if json_out:
             import json
 
             top_rows = []
-            for b in win.buckets[:top]:
+            for b in shown_buckets:
                 list_b = win.list_for_key(b.key)
                 row = b.to_dict(win.rates)
                 row["list_usd"] = round(list_b, 4)
@@ -459,7 +470,7 @@ def report(
             if d_from is not None and result_earliest is not None and d_from < result_earliest:
                 period += f"  (requested --from {d_from.isoformat()})"
         title = (
-            f"Usage by {group} (list$ primary · est$=path scale, top {top}, "
+            f"Usage by {group} (list$ primary · est$=path scale, {cut}, "
             f"{win.tot.n} prompts, {_fmt_tokens(win.tot.total)} tok){period}"
         )
         t = make_table(
@@ -467,7 +478,6 @@ def report(
             ["Key", "Prm", "Tokens", "Cache%", "list$", "est$", "Share(list$)", "Share(tok)"],
             no_wrap=("Key",),
         )
-        shown_buckets = win.buckets[:top]
         row_keys = _row_display_keys(
             [b.key for b in shown_buckets],
             group,
@@ -490,6 +500,7 @@ def report(
                 _ascii_bar(float(b.total), float(max_tok), 12),
             )
         console.print(t)
+        print_bucket_cut_note(shown_n, len(win.buckets))
         _maybe_print_unsplit_pr_note(group, [b.key for b in shown_buckets], prs_by_session)
         print_token_cost_summary(win, cost_mode=False, show_faq_hint=False)
         from ..utils.usage_tokens import aggregate as _agg
@@ -515,6 +526,7 @@ def report(
         date_from=date_from,
         by=by,
         top=top,
+        show_all=show_all,
         json_out=json_out,
     )
 
@@ -622,7 +634,8 @@ def cost_report(
             "sessions with no created PR are omitted unless --include-unlabeled"
         ),
     ),
-    top: int = typer.Option(8, "--top", metavar="N", help="Show top N buckets"),
+    top: int = typer.Option(DEFAULT_BUCKET_TOP, "--top", metavar="N", help=_TOP_HELP),
+    show_all: bool = typer.Option(False, "--all", help=_ALL_HELP),
     mode: str = typer.Option(
         "tokens",
         "--mode",
@@ -806,6 +819,7 @@ def cost_report(
             since=since or date_from,
             by=by if by in ("model", "project") else "model",
             top=top,
+            show_all=show_all,
             json_out=json_out,
         )
         return
@@ -861,6 +875,9 @@ def cost_report(
     est_cash_total = win.est_cash_total
     tot = win.tot
     buckets = win.buckets
+    shown_n = shown_bucket_count(len(buckets), top, show_all)
+    shown_buckets = buckets[:shown_n]
+    cut = bucket_cut_caption(shown_n, len(buckets))
     mix = win.mix
     cash_scale_val = win.cash_scale_val
     cash_scale_src = win.cash_scale_src
@@ -918,7 +935,7 @@ def cost_report(
         import json
 
         top_rows = []
-        for b in buckets[:top]:
+        for b in shown_buckets:
             list_b = win.list_for_key(b.key)
             row = b.to_dict(rates)
             row["list_usd"] = round(list_b, 4)
@@ -1063,11 +1080,10 @@ def cost_report(
     headers.append("Share(list$)")
 
     t = make_table(
-        f"Estimated Cost by {by} (list$ primary · est$=path scale){period}",
+        f"Estimated Cost by {by} (list$ primary · est$=path scale, {cut}){period}",
         headers,
         no_wrap=("Key",),
     )
-    shown_buckets = buckets[:top]
     row_keys = _row_display_keys(
         [b.key for b in shown_buckets],
         by,
@@ -1095,6 +1111,7 @@ def cost_report(
         cells.append(_ascii_bar(list_b, max_share, 12))
         t.add_row(*cells)
     console.print(t)
+    print_bucket_cut_note(shown_n, len(buckets))
     _maybe_print_unsplit_pr_note(by, [b.key for b in shown_buckets], prs_by_session)
 
     print_token_cost_summary(win, detail=detail, cost_mode=True, show_faq_hint=False)

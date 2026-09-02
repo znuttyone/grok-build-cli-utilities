@@ -39,6 +39,7 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 | “How much is left / weekly pool?” | `auth status` or cost footer wallet snapshot |
 | API vs SuperGrok vs Heavy? | `usage cost … --plan-advisor` (or `-P`) — if intensity **holds** |
 | Model promo −25% / free tops | `--topoff-discount 0.25` or `1.0` (+ plan-advisor scenarios) |
+| See every cost row | `usage cost --all` (default is top 10 by list$; TOTALS is the whole window) |
 
 ```bash
 # Typical day-to-day
@@ -82,6 +83,9 @@ grok-utils usage cost --from 2026-08-01 --by session
 # Per GitHub PR when native logs map 1:1. Multi-PR sessions are not split.
 grok-utils usage cost --from 2026-08-01 --by pr
 
+# Every bucket (default is top 10 by list$). TOTALS is still the whole window.
+grok-utils usage cost --from 2026-08-01 --by app --all
+
 # Fit est$ to wallet burn for a window (one-shot recalibration)
 # e.g. start ~$10 + tops $60 − remaining $21.40 → --prepaid-usd 70 --credits-remaining 21.40
 grok-utils usage cost --from 2026-08-01 --by app \
@@ -103,6 +107,8 @@ grok-utils usage cost ... -P --topoff-discount 0.25
 | **list$** | `costUsdTicks ÷ 10^10` when present (matches `/usage` Cost). With `-m`, tokens × that model's published ≤200k rates. |
 | **est$** | **list$ × path/regime scale** — Extra Credits burn lens (pool ≈ 0, overage ≈ 1.9×). |
 | **est_cash$** | When promo set: est$ × (1 − topoff_discount) — card $ on tops. |
+
+Default table is **top 10** buckets by list$. `--all` prints every row and overrides `--top`. When the table is truncated, the title (and a line under the table) says `top 10 of 18`. `all 10` means every bucket is visible. **TOTALS** is always the whole window. Hidden rows are not folded into visible Keys. Share bars scale to the shown max.
 
 ### Cash scale (path/regime defaults)
 
@@ -140,6 +146,8 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 | `--from` / `--to` / `--since` | Inclusive **local** calendar dates (same clock as weekly resets / Build `/usage`). Omit `--to` for through **latest** session data (`--since` = `--from`). If `--from` is earlier than any turn in the logs, a warning shows the real earliest date (table title uses the data span). |
 | `--tz` | Calendar zone for `--from` / `--to` / `--since` and `--by day`. `local` (default) \| `UTC` \| IANA (`America/New_York`). CLI wins over `[usage] date_tz`. |
 | `--by` | `app` \| `project` \| `model` \| `day` \| `week` \| `month` \| `session` \| `pr` |
+| `--top` | Top N buckets by list$ (default 10). |
+| `--all` | Print every bucket. Overrides `--top`. |
 | `--include-unlabeled` | With `--by pr`, also list sessions that never created a PR (keyed by session id). Default omit. |
 | `-m` / `--rates-model` | Force a reconstructed rate table for **list$** (ignores ticks). Omit to use `/usage` Session Cost (`costUsdTicks÷1e10`). Fallback table: `grok-4.6` |
 | `--cash-scale` | Force uniform list$ → est$ scale (else path/regime defaults) |
@@ -291,6 +299,9 @@ Plan-advisor (`-P`) stays on `usage cost` only.
 ```bash
 # By app → token path automatically (--tokens optional / no-op)
 grok-utils usage report --by app --from 2026-08-01 -m grok-4.6
+
+# Every bucket (same --top / --all as usage cost)
+grok-utils usage report --by app --from 2026-08-01 --all
 
 # By day with list$/est$ (here --tokens matters)
 grok-utils usage report --by day --tokens --from 2026-08-01 -m grok-4.6

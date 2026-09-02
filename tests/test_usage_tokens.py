@@ -2198,12 +2198,17 @@ def test_usage_cost_help_from_is_local_calendar():
     assert "utc" in blob
     assert "iana" in blob
     assert "date_tz" in blob
+    assert "--all" in blob
+    assert "overrides" in blob
+    assert "default: 10" in blob
     r2 = runner.invoke(app, ["usage", "report", "--help"])
     assert r2.exit_code == 0, r2.output
     blob2 = _plain_cli(r2.output).lower()
     assert "local calendar" in blob2
     assert "--tz" in blob2
     assert "iana" in blob2
+    assert "--all" in blob2
+    assert "default: 10" in blob2
 
 
 def test_usage_info_explains_local_from():
@@ -2212,3 +2217,167 @@ def test_usage_info_explains_local_from():
     assert "Why is --from a local date?" in r.output
     assert "--tz UTC" in r.output
     assert "weekly pool resets" in r.output.lower() or "Weekly pool resets" in r.output
+    assert "Default is top 10 by list$" in r.output
+    assert "--all prints every row" in r.output
+    assert "TOTALS is the whole window" in r.output
+
+
+def test_shown_bucket_count_all_overrides_top():
+    from grok_build_cli_utilities.utils.usage_display import (
+        DEFAULT_BUCKET_TOP,
+        bucket_cut_caption,
+        shown_bucket_count,
+    )
+
+    assert DEFAULT_BUCKET_TOP == 10
+    assert shown_bucket_count(18, top=10, show_all=False) == 10
+    assert shown_bucket_count(18, top=3, show_all=True) == 18
+    assert shown_bucket_count(18, top=0, show_all=False) == 0
+    assert shown_bucket_count(18, top=0, show_all=True) == 18
+    assert shown_bucket_count(5, top=10, show_all=False) == 5
+    assert shown_bucket_count(5, top=-1, show_all=False) == 0
+    assert bucket_cut_caption(10, 18) == "top 10 of 18"
+    assert bucket_cut_caption(10, 10) == "all 10"
+    assert bucket_cut_caption(12, 12) == "all 12"
+
+
+def _write_ranked_apps(grok: Path, n: int = 12) -> list[str]:
+    names = [f"bucket{i:02d}" for i in range(n)]
+    ticks_per_usd = 10_000_000_000
+    for i, name in enumerate(names):
+        sess = grok / "sessions" / name / f"s{i:02d}"
+        _write_turn(
+            sess / "updates.jsonl",
+            prompt_id=f"p{i:02d}",
+            ts="2026-08-02T12:00:00Z",
+            input_t=1000,
+            output_t=10,
+            cached=0,
+            reasoning=0,
+            ticks=(n - i) * ticks_per_usd,
+        )
+    return names
+
+
+def test_usage_cost_default_top_10_caption_and_no_fold(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    names = _write_ranked_apps(grok, 12)
+    args = [
+        "-g",
+        str(grok),
+        "usage",
+        "cost",
+        "--from",
+        "2026-08-01",
+        "--by",
+        "app",
+    ]
+    human = runner.invoke(app, args)
+    assert human.exit_code == 0, human.output
+    out = human.output
+    assert "top 10 of 12" in out
+    assert "TOTALS is the whole window" in out
+    assert "list$=$78.00" in out or "list$=$78.00" in _plain_cli(out)
+    assert names[0] in out
+    assert names[9] in out
+    assert names[10] not in out
+    assert names[11] not in out
+
+    js = runner.invoke(app, [*args, "--json"])
+    assert js.exit_code == 0, js.output
+    data = _json_from_cli(js)
+    keys = [b["key"] for b in data["buckets"]]
+    assert len(keys) == 10
+    assert keys == names[:10]
+    assert names[10] not in keys
+    assert names[11] not in keys
+    assert abs(data["totals"]["list_usd"] - 78.0) < 1e-6
+    shown_sum = sum(b["list_usd"] for b in data["buckets"])
+    assert abs(shown_sum - 75.0) < 1e-6
+    assert abs(data["totals"]["list_usd"] - shown_sum) > 1.0
+
+
+def test_usage_cost_all_overrides_top(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    names = _write_ranked_apps(grok, 12)
+    args = [
+        "-g",
+        str(grok),
+        "usage",
+        "cost",
+        "--from",
+        "2026-08-01",
+        "--by",
+        "app",
+        "--all",
+        "--top",
+        "3",
+    ]
+    human = runner.invoke(app, args)
+    assert human.exit_code == 0, human.output
+    out = human.output
+    assert "all 12" in out
+    assert "top 10 of" not in out
+    assert names[11] in out
+    js = runner.invoke(app, [*args, "--json"])
+    assert js.exit_code == 0, js.output
+    data = _json_from_cli(js)
+    keys = [b["key"] for b in data["buckets"]]
+    assert len(keys) == 12
+    assert keys == names
+    assert abs(data["totals"]["list_usd"] - 78.0) < 1e-6
+
+
+def test_usage_cost_top_zero_shows_none(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    _write_ranked_apps(grok, 12)
+    r = runner.invoke(
+        app,
+        [
+            "-g",
+            str(grok),
+            "usage",
+            "cost",
+            "--from",
+            "2026-08-01",
+            "--by",
+            "app",
+            "--top",
+            "0",
+            "--json",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    data = _json_from_cli(r)
+    assert data["buckets"] == []
+    assert abs(data["totals"]["list_usd"] - 78.0) < 1e-6
+
+
+def test_usage_report_default_top_and_all(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    names = _write_ranked_apps(grok, 12)
+    args = [
+        "-g",
+        str(grok),
+        "usage",
+        "report",
+        "--from",
+        "2026-08-01",
+        "--by",
+        "app",
+    ]
+    human = runner.invoke(app, args)
+    assert human.exit_code == 0, human.output
+    assert "top 10 of 12" in human.output
+    assert names[11] not in human.output
+    all_human = runner.invoke(app, [*args, "--all"])
+    assert all_human.exit_code == 0, all_human.output
+    assert "all 12" in all_human.output
+    assert names[11] in all_human.output
+    js = runner.invoke(app, [*args, "--json"])
+    assert js.exit_code == 0, js.output
+    data = _json_from_cli(js)
+    assert len(data["buckets"]) == 10
+    all_js = runner.invoke(app, [*args, "--all", "--json"])
+    assert all_js.exit_code == 0, all_js.output
+    assert len(_json_from_cli(all_js)["buckets"]) == 12
