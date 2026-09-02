@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,12 @@ from grok_build_cli_utilities.utils.usage_tokens import (
 )
 
 runner = CliRunner()
+
+
+def _plain_cli(text: str) -> str:
+    """Strip ANSI and collapse wrap so help assertions do not depend on COLUMNS."""
+    stripped = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text or "")
+    return " ".join(stripped.split())
 
 
 def _json_from_cli(result) -> dict:
@@ -2185,15 +2192,18 @@ def test_usage_unknown_tz_exits(tmp_path: Path):
 def test_usage_cost_help_from_is_local_calendar():
     r = runner.invoke(app, ["usage", "cost", "--help"])
     assert r.exit_code == 0, r.output
-    text = r.output.lower()
-    assert "local calendar" in text
-    assert "--tz" in r.output
-    assert "utc" in text
-    assert "usage.date_tz" in r.output
+    blob = _plain_cli(r.output).lower()
+    assert "local calendar" in blob
+    assert "--tz" in blob
+    assert "utc" in blob
+    assert "iana" in blob
+    assert "date_tz" in blob
     r2 = runner.invoke(app, ["usage", "report", "--help"])
     assert r2.exit_code == 0, r2.output
-    assert "local calendar" in r2.output.lower()
-    assert "--tz" in r2.output
+    blob2 = _plain_cli(r2.output).lower()
+    assert "local calendar" in blob2
+    assert "--tz" in blob2
+    assert "iana" in blob2
 
 
 def test_usage_info_explains_local_from():
