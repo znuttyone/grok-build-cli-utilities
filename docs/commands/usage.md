@@ -108,7 +108,7 @@ grok-utils usage cost ... -P --topoff-discount 0.25
 | **est$** | **list$ × path/regime scale** — Extra Credits burn lens (pool ≈ 0, overage ≈ 1.9×). |
 | **est_cash$** | When promo set: est$ × (1 − topoff_discount) — card $ on tops. |
 
-Default table is **top 10** buckets by list$. `--all` prints every row and overrides `--top`. When the table is truncated, the title (and a line under the table) says `top 10 of 18`. `all 10` means every bucket is visible. **TOTALS** is always the whole window. Hidden rows are not folded into visible Keys. Share bars scale to the shown max.
+Default table is **top 10** buckets by list$. `--all` prints every row and overrides `--top`. When the table is truncated, the title says `top 10 of 18` and a line under the table adds `TOTALS is the whole window · --all to see all`. `all 10` means every bucket is visible. **TOTALS** is always the whole window. Hidden rows are not folded into visible Keys. Share bars scale to the shown max.
 
 ### Cash scale (path/regime defaults)
 

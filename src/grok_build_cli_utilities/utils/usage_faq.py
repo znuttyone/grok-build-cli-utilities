@@ -130,6 +130,7 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
   Q: Why does the cost table show only 10 rows?
   A: Default is top 10 by list$. --all prints every row.
      TOTALS is the whole window even when the table is truncated.
+     Truncated tables say --all to see all.
 
   Q: Why is --from a local date?
   A: A YYYY-MM-DD with no time is a day on the machine in front of you.

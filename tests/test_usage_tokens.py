@@ -2220,6 +2220,7 @@ def test_usage_info_explains_local_from():
     assert "Default is top 10 by list$" in r.output
     assert "--all prints every row" in r.output
     assert "TOTALS is the whole window" in r.output
+    assert "--all to see all" in r.output
 
 
 def test_shown_bucket_count_all_overrides_top():
@@ -2277,6 +2278,8 @@ def test_usage_cost_default_top_10_caption_and_no_fold(tmp_path: Path):
     out = human.output
     assert "top 10 of 12" in out
     assert "TOTALS is the whole window" in out
+    assert "--all" in out
+    assert "to see all" in out
     assert "list$=$78.00" in out or "list$=$78.00" in _plain_cli(out)
     assert names[0] in out
     assert names[9] in out
@@ -2318,6 +2321,7 @@ def test_usage_cost_all_overrides_top(tmp_path: Path):
     out = human.output
     assert "all 12" in out
     assert "top 10 of" not in out
+    assert "to see all" not in out
     assert names[11] in out
     js = runner.invoke(app, [*args, "--json"])
     assert js.exit_code == 0, js.output
@@ -2369,10 +2373,12 @@ def test_usage_report_default_top_and_all(tmp_path: Path):
     human = runner.invoke(app, args)
     assert human.exit_code == 0, human.output
     assert "top 10 of 12" in human.output
+    assert "--all" in human.output
     assert names[11] not in human.output
     all_human = runner.invoke(app, [*args, "--all"])
     assert all_human.exit_code == 0, all_human.output
     assert "all 12" in all_human.output
+    assert "to see all" not in all_human.output
     assert names[11] in all_human.output
     js = runner.invoke(app, [*args, "--json"])
     assert js.exit_code == 0, js.output

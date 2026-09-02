@@ -41,7 +41,8 @@ def bucket_cut_caption(shown: int, total: int) -> str:
 def print_bucket_cut_note(shown: int, total: int) -> None:
     if shown >= total:
         return
-    console.print(f"[dim]{bucket_cut_caption(shown, total)} · TOTALS is the whole window[/dim]")
+    cap = bucket_cut_caption(shown, total)
+    console.print(f"[dim]{cap} · TOTALS is the whole window · --all to see all[/dim]")
 
 
 def fmt_tokens(n: int) -> str:
