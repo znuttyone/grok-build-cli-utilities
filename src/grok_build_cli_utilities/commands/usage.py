@@ -316,7 +316,7 @@ def report(
         "app",
         "--by",
         help=(
-            "Group by: app (short name, default, list$/est$) | project (full cwd, "
+            "Group by: app (repo from cwd, default, list$/est$) | project (full cwd, "
             "list$/est$ with --tokens) | model | day | session | pr. "
             "--tokens required for project/model/day; ignored with --by app|session|pr"
         ),
@@ -622,7 +622,8 @@ def cost_report(
         metavar="KEY",
         help=(
             "Group cost by: app | project | model | day | week | month | session | pr. "
-            "app is basename(cwd). session and pr Keys need one Grok Build "
+            "app is the repo inferred from cwd (issue and Grok worktrees roll up). "
+            "session and pr Keys need one Grok Build "
             "session per unit of work, cwd in that repo, and github "
             "create_pull_request OkayOutput or gh pr create stdout in "
             "updates.jsonl. session = repo#issue or project name, never a "
@@ -788,24 +789,25 @@ def cost_report(
 
     PR-level Keys and clean session labels appear only when the Grok Build
     session reports them. If you skip this, you still get --by app (the
-    folder name).
+    repo inferred from cwd).
 
     One Grok Build session per unit of work. Several PRs from one parent chat
     stay one unsplit --by pr row. Keys with several PRs are one session;
     tokens are not split.
 
     Session cwd is the repo (or Grok worktree / repo-issue-N clone) for that
-    work. Not an unrelated folder. --by app is basename(cwd). A chat started
-    in the wrong repo shows that folder's name. PR labels, if any, come from
-    whatever create_pull_request or gh pr create ran.
+    work. Not an unrelated folder. --by app is the repo inferred from cwd.
+    Issue worktrees and Grok worktrees roll into that repo Key. A chat
+    started in the wrong repo shows that folder's name. PR labels, if any,
+    come from whatever create_pull_request or gh pr create ran.
 
     PR labels: only github create_pull_request OkayOutput (number, html_url)
     or gh pr create stdout URL in updates.jsonl. Chat text and
     get_pull_request do not count. Fixes or Closes in the create body
     puts the issue number in the Key.
 
-    Grok worktrees (~/.grok/worktrees/...) and *-issue-N clones pretty-print
-    as their own --by app Keys. They are not merged into the parent clone Key.
+    --by pr lists every created PR. Unlabeled --by session Keys still
+    pretty-print repo-issue-N clones as repo#N.
 
     See: grok-utils usage info
     """

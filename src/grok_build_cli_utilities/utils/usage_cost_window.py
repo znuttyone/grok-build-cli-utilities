@@ -36,6 +36,7 @@ from .usage_tokens import (
     UsageRec,
     aggregate,
     bucket_key,
+    preferred_app_names,
     total_bucket,
 )
 
@@ -128,12 +129,14 @@ def build_token_cost_window(
         except (TypeError, ValueError):
             cfg_scale = None
 
+    app_names = preferred_app_names(records) if group == "app" else None
     buckets = aggregate(
         records,
         group,
         prs_by_session=prs_by_session,
         include_unlabeled=include_unlabeled,
         tz=date_tz,
+        app_names=app_names,
     )
     tot = total_bucket(records)
     list_seed = tot.list_usd(rates, prefer_ticks=prefer_ticks)
@@ -161,6 +164,7 @@ def build_token_cost_window(
             prs_by_session=prs_by_session,
             include_unlabeled=include_unlabeled,
             tz=date_tz,
+            app_names=app_names,
         )
         return k if k is not None else (r.session_id or "unknown")
 

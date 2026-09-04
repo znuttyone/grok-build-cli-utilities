@@ -84,7 +84,7 @@ Backups always include a SHA-256 manifest.
 
 ```bash
 grok-utils usage report --by project --top 8   # legacy: sessions/messages
-grok-utils usage report --by app --from 2026-08-01 -m grok-4.6   # list$/est$ (short names)
+grok-utils usage report --by app --from 2026-08-01 -m grok-4.6   # list$/est$ (repo from cwd)
 grok-utils usage report --by day --tokens --from 2026-08-01      # list$/est$ by day
 
 grok-utils usage top-projects

@@ -142,24 +142,31 @@ Grok Build and grok-utils show different *kinds* of money and tokens. None is
      or [usage] date_tz in grok-utils.toml pins a zone. CLI --tz wins.
      Default is local when neither is set.
 
+  Q: What is --by app vs --by pr vs --by session?
+  A: --by app is the repo inferred from cwd. Parent clones, repo-issue-N
+     folders, and Grok worktrees for that repo are one row (prompts/list$
+     summed). Grouping is case-insensitive. Display prefers the GitHub/
+     folder spelling. #N is not used on --by app.
+     --by pr lists every created issue/PR across repos (native creates only).
+     --by session is one row per Grok Build chat. Unlabeled session Keys
+     still pretty-print repo-issue-N clones as repo#N so chats stay distinct.
+
   Q: Why is --by session or --by pr still the folder name?
   A: PR-level Keys and clean session labels appear only when the Grok Build
      session reports them. If you skip this, you still get --by app (the
-     folder name).
+     repo inferred from cwd).
        · One Grok Build session per unit of work. Several PRs from one parent
          chat stay one unsplit --by pr row. Keys with several PRs are one
          session; tokens are not split.
        · Session cwd is the repo (or Grok worktree / repo-issue-N clone) for
-         that work. Not an unrelated folder. --by app is basename(cwd). A chat
+         that work. Not an unrelated folder. --by app is the repo inferred
+         from cwd. Issue worktree folders roll into the repo Key. A chat
          started in the wrong repo shows that folder's name. PR labels, if
          any, come from whatever create_pull_request or gh pr create ran.
        · PR labels: only github create_pull_request OkayOutput (number,
          html_url) or gh pr create stdout URL in updates.jsonl. Chat text
          and get_pull_request do not count.
        · Fixes or Closes in the create body puts the issue number in the Key.
-       · Grok worktrees (~/.grok/worktrees/...) and *-issue-N clones
-         pretty-print as their own --by app Keys. They are not merged into
-         the parent clone Key.
 
   Q: Common commands (novice)
   A:  grok-utils usage cost --from 2026-08-01 --by app -m grok-4.6

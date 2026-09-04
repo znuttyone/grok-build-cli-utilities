@@ -168,16 +168,19 @@ def parse_ts(obj: dict) -> datetime | None:
     return None
 
 
-_ISSUE_CLONE = re.compile(r"^(.+)-issue-(\d+)$")
+_ISSUE_CLONE = re.compile(r"^(.+)-issue-(\d+)$", re.IGNORECASE)
 _GROK_WORKTREE = re.compile(
     r"(?:^|/)\.grok/worktrees/github-([^/]+)/([^/]+)/?$",
     re.IGNORECASE,
 )
 _SUBAGENT_LEAF = re.compile(r"^subagent-", re.IGNORECASE)
+_WORKTREE_LABEL = re.compile(r"\s*\(worktree\)\s*$", re.IGNORECASE)
+# github-znuttyone-ProfitGuard → ProfitGuard. All-lowercase slugs stay intact.
+_OWNER_THEN_REPO = re.compile(r"^[a-z0-9][a-z0-9-]*-([A-Z].+)$")
 
 
 def pretty_app_name(short: str, cwd: str = "") -> str:
-    """Human --by app / unlabeled session Key. Does not fold into the parent app."""
+    """Unlabeled --by session Key. Issue clones stay repo#N. Does not roll up to the parent app."""
     src = (short or "").strip()
     text = (cwd or src).replace("\\", "/")
     for cand in (Path(text).name, Path(src).name, src):
@@ -193,6 +196,97 @@ def pretty_app_name(short: str, cwd: str = "") -> str:
             return f"{repo} (worktree)"
         return f"{repo} ({label})"
     return src
+
+
+@dataclass(frozen=True)
+class AppRepo:
+    """Product/repo inferred from a session cwd. No GitHub API."""
+
+    name: str
+    rank: int
+
+    @property
+    def group(self) -> str:
+        return self.name.casefold()
+
+
+def _path_parts(raw: str) -> list[str]:
+    text = (raw or "").replace("%2F", "/").replace("%2f", "/").replace("\\", "/")
+    return [p for p in text.split("/") if p and p != "."]
+
+
+def _strip_worktree_label(name: str) -> str:
+    return _WORKTREE_LABEL.sub("", (name or "").strip()).strip()
+
+
+def _repo_from_github_slug(slug: str) -> str:
+    text = (slug or "").strip()
+    if text.lower().startswith("github-"):
+        text = text[7:]
+    m = _OWNER_THEN_REPO.fullmatch(text)
+    if m:
+        return m.group(1)
+    return text
+
+
+def app_repo_from_cwd(cwd: str, *, fallback: str = "") -> AppRepo:
+    """Infer the product/repo from cwd. Higher rank wins when casefold-merging."""
+    parts = _path_parts(cwd)
+    for i, part in enumerate(parts):
+        if part.casefold() == "github" and i + 1 < len(parts):
+            leaf = _strip_worktree_label(parts[i + 1])
+            m = _ISSUE_CLONE.match(leaf)
+            if m:
+                return AppRepo(m.group(1), 30)
+            return AppRepo(leaf, 40)
+    for part in reversed(parts):
+        m = _ISSUE_CLONE.match(_strip_worktree_label(part))
+        if m:
+            return AppRepo(m.group(1), 30)
+    for i, part in enumerate(parts):
+        if not part.lower().startswith("github-") or len(part) <= 7:
+            continue
+        if i > 0 and parts[i - 1].casefold() == "worktrees":
+            return AppRepo(_repo_from_github_slug(part), 20)
+    leaf = _strip_worktree_label(parts[-1] if parts else fallback)
+    if not leaf:
+        leaf = _strip_worktree_label(fallback)
+    m = _ISSUE_CLONE.match(leaf)
+    if m:
+        return AppRepo(m.group(1), 0)
+    head, sep, num = leaf.rpartition("#")
+    if sep and num.isdigit() and head and "/" not in head:
+        return AppRepo(head, 0)
+    labeled = re.match(r"^(.+?)\s+\([^)]+\)\s*$", leaf)
+    if labeled:
+        return AppRepo(labeled.group(1), 0)
+    return AppRepo(leaf or (fallback or "unknown").strip() or "unknown", 0)
+
+
+def app_repo_name(cwd: str, short: str = "") -> str:
+    """--by app Key: repo inferred from cwd (issue and Grok worktrees roll up)."""
+    return app_repo_from_cwd(cwd, fallback=short).name
+
+
+def _prefer_app_repo(new: AppRepo, old: AppRepo) -> bool:
+    if new.rank != old.rank:
+        return new.rank > old.rank
+    new_mixed = new.name != new.name.lower()
+    old_mixed = old.name != old.name.lower()
+    if new_mixed != old_mixed:
+        return new_mixed
+    return False
+
+
+def preferred_app_names(records: Iterable[UsageRec]) -> dict[str, str]:
+    """casefold → display spelling. Prefer GitHub/ folder, then repo-issue-N, then slug."""
+    best: dict[str, AppRepo] = {}
+    for r in records:
+        ident = app_repo_from_cwd(r.cwd or r.project)
+        prev = best.get(ident.group)
+        if prev is None or _prefer_app_repo(ident, prev):
+            best[ident.group] = ident
+    return {fold: ident.name for fold, ident in best.items()}
 
 
 def project_from_path(updates_path: Path) -> tuple[str, str]:
@@ -775,10 +869,15 @@ def bucket_key(
     prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
     tz: tzinfo | None = None,
+    app_names: Mapping[str, str] | None = None,
 ) -> str | None:
-    if group in ("app", "project"):
-        # app = short folder name; project = full cwd (disambiguates same name in different paths)
-        return r.project if group == "app" else (r.cwd or r.project)
+    if group == "app":
+        ident = app_repo_from_cwd(r.cwd or r.project)
+        if app_names:
+            return app_names.get(ident.group, ident.name)
+        return ident.name
+    if group == "project":
+        return r.cwd or r.project
     if group == "model":
         return r.model or "unknown"
     if group in ("day", "week", "month"):
@@ -809,8 +908,12 @@ def aggregate(
     prs_by_session: Mapping[str, Iterable[CreatedPr | str]] | None = None,
     include_unlabeled: bool = False,
     tz: tzinfo | None = None,
+    app_names: Mapping[str, str] | None = None,
 ) -> list[UsageBucket]:
     zone = tz if tz is not None else local_tz()
+    names = app_names
+    if group == "app" and names is None:
+        names = preferred_app_names(records)
     m: dict[str, UsageBucket] = {}
     for r in records:
         k = bucket_key(
@@ -819,6 +922,7 @@ def aggregate(
             prs_by_session=prs_by_session,
             include_unlabeled=include_unlabeled,
             tz=zone,
+            app_names=names,
         )
         if k is None:
             continue

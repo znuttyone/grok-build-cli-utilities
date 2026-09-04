@@ -30,7 +30,7 @@ Grok Build and this tool show **different meters**. They will **not** match doll
 
 | Goal | Use |
 |---|---|
-| Which app/day used the most? | `usage cost --by app` or `--by day` → **list$** |
+| Which repo/day used the most? | `usage cost --by app` or `--by day` → **list$**. `--by app` rolls issue and Grok worktrees into the repo. |
 | Which Grok Build session? | `usage cost --by session` → **list$** (PR labels when that session created PRs) |
 | Which GitHub PR (1:1 session only)? | `usage cost --by pr` → **list$**. Multi-PR sessions stay one row. No GitHub API. |
 | Session or PR Keys missing? | The Grok Build session did not report them. You still get `--by app`. See [Session and PR keys](#session-and-pr-keys). |
@@ -169,25 +169,25 @@ topoff_discount_scenarios = [0.20, 0.25, 0.40]
 - Multi-PR rows stay one session. The table prints `Keys with several PRs are one session; tokens are not split.`
 - The Key column does not wrap onto a fake extra row. Long Keys ellipsize.
 
-`--by app` pretty-prints leftover cwd names and keeps them off the parent app Key. `notes-issue-9` becomes `notes#9`. A Grok worktree `~/.grok/worktrees/github-grok-build-cli-utilities/subagent-<uuid>` becomes `grok-build-cli-utilities (worktree)`. When the leaf is not `subagent-<uuid>`, the Key uses that worktree label.
+`--by app` is the repo inferred from cwd. Parent clones, `repo-issue-N` folders, and Grok worktrees for that repo are one Key. `notes-issue-9` rolls into `notes`, not `notes#9`. A Grok worktree `~/.grok/worktrees/github-widgets/subagent-<uuid>` rolls into `widgets`. Grouping is case-insensitive. Display prefers the `GitHub/` folder spelling.
 
 ### Session and PR keys
 
-`--by app` is the folder name (`basename` of the session cwd). One Grok Build chat in that folder is one cost bucket, even when it shipped many PRs.
+`--by app` is the product/repo inferred from the session cwd. One Grok Build chat in that repo is one cost bucket with other chats in the same repo, even when it shipped many PRs.
 
 `--by session` and `--by pr` add chat and 1:1 PR views. Those Keys appear only when the Grok Build session reports them. If you skip the setup below, you still get `--by app`.
 
 Run one Grok Build session per unit of work. Several PRs from one parent chat stay one unsplit `--by pr` row. Keys with several PRs are one session. Tokens are not split.
 
-Start the session with cwd in the repo for that work, or in a Grok worktree, or in a `repo-issue-N` clone. Do not start it in an unrelated folder. `--by app` is basename(cwd). A chat started in the wrong repo shows that folder's name. PR labels, if any, still come from whatever `create_pull_request` or `gh pr create` ran.
+Start the session with cwd in the repo for that work, or in a Grok worktree, or in a `repo-issue-N` clone. Do not start it in an unrelated folder. `--by app` is the repo inferred from cwd. Issue worktree folders roll into the repo Key. A chat started in the wrong repo shows that folder's name. PR labels, if any, still come from whatever `create_pull_request` or `gh pr create` ran.
 
 Create each PR with github `create_pull_request` (OkayOutput fields `number` and `html_url`) or with `gh pr create` (the stdout URL in `updates.jsonl`). Chat text and `get_pull_request` do not count.
 
 Put `Fixes` or `Closes` in the create body so the Key includes the issue number.
 
-Grok worktrees under `~/.grok/worktrees` and `*-issue-N` clones pretty-print as their own `--by app` Keys. They are not merged into the parent clone Key.
+`--by pr` still lists every created PR across repos. Unlabeled `--by session` Keys still pretty-print `repo-issue-N` clones as `repo#N` so chats stay distinct.
 
-Issue clone: `notes-issue-9` becomes `notes#9`. Collision: `notes#22 · 01a05e3c…`.
+Issue clone on `--by session`: `notes-issue-9` becomes `notes#9`. Collision: `notes#22 · 01a05e3c…`.
 
 Example from `grok-utils usage cost --from 2026-09-01 --by pr`:
 
@@ -288,7 +288,7 @@ A later opt-in command (e.g. `usage rates-refresh`) could fetch these, cache the
 
 | How you invoke | Path |
 |---|---|
-| `--by app` (default) | Short names · **always** list$/est$ · **`--tokens` redundant** |
+| `--by app` (default) | Repo from cwd (worktrees roll up) · **always** list$/est$ · **`--tokens` redundant** |
 | `--by session` / `pr` | Same token path as `--by app` (`--tokens` redundant) |
 | `--by project` | Full cwd paths; need **`--tokens`** for list$/est$ (else legacy messages) |
 | `--by model` / `day` **without** `--tokens` | Legacy session-summary report (no list$/est$) |

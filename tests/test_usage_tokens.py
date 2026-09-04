@@ -485,7 +485,7 @@ def test_usage_info_and_cost_help_mention_cwd_and_native_pr_create():
     assert info.exit_code == 0, info.output
     blob = info.output
     assert "cwd" in blob
-    assert "basename(cwd)" in blob
+    assert "inferred from cwd" in blob
     assert "create_pull_request" in blob
     assert "gh pr create" in blob
     assert "get_pull_request" in blob
@@ -493,7 +493,7 @@ def test_usage_info_and_cost_help_mention_cwd_and_native_pr_create():
     assert help_r.exit_code == 0, help_r.output
     h = help_r.output
     assert "cwd" in h
-    assert "basename(cwd)" in h
+    assert "inferred from cwd" in h
     assert "create_pull_request" in h
     assert "gh pr create" in h
 
@@ -1845,22 +1845,57 @@ def test_pretty_app_name_worktree_and_issue_clone():
     from grok_build_cli_utilities.utils.usage_tokens import pretty_app_name
 
     wt = (
-        "/Users/brunnr/.grok/worktrees/github-grok-build-cli-utilities/"
+        "/Users/me/.grok/worktrees/github-grok-build-cli-utilities/"
         "subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
     )
     assert pretty_app_name("subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1", wt) == (
         "grok-build-cli-utilities (worktree)"
     )
-    labeled = "/Users/brunnr/.grok/worktrees/github-grok-build-cli-utilities/update-for-46"
+    labeled = "/Users/me/.grok/worktrees/github-grok-build-cli-utilities/update-for-46"
     assert pretty_app_name("update-for-46", labeled) == ("grok-build-cli-utilities (update-for-46)")
     assert (
         pretty_app_name(
             "notes-issue-9",
-            "/Users/brunnr/Documents/GitHub/notes-issue-9",
+            "/Users/me/Documents/GitHub/notes-issue-9",
         )
         == "notes#9"
     )
-    assert pretty_app_name("notes", "/Users/brunnr/Documents/GitHub/notes") == "notes"
+    assert pretty_app_name("notes", "/Users/me/Documents/GitHub/notes") == "notes"
+
+
+def test_app_repo_name_github_issue_and_worktree():
+    from grok_build_cli_utilities.utils.usage_tokens import app_repo_name
+
+    assert app_repo_name("/Users/me/Documents/GitHub/widgets") == "widgets"
+    assert app_repo_name("/Users/me/Documents/GitHub/widgets-issue-9") == "widgets"
+    assert app_repo_name("/Users/me/src/widgets-issue-9") == "widgets"
+    assert (
+        app_repo_name(
+            "/Users/me/.grok/worktrees/github-widgets/subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
+        )
+        == "widgets"
+    )
+    assert (
+        app_repo_name("/Users/me/.grok/worktrees/github-alice-Widgets/Widgets-issue-9") == "Widgets"
+    )
+    assert (
+        app_repo_name(
+            "/Users/me/.grok/worktrees/github-alice-Widgets/"
+            "subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
+        )
+        == "Widgets"
+    )
+    assert (
+        app_repo_name(
+            "/Users/me/.grok/worktrees/github-notes-cli/subagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
+        )
+        == "notes-cli"
+    )
+    assert app_repo_name("widgets (worktree)") == "widgets"
+    assert app_repo_name("notes#9") == "notes"
+    assert app_repo_name("widgets (admin-reporting)") == "widgets"
+    assert app_repo_name("", "widgets") == "widgets"
+    assert "#" not in app_repo_name("/Users/me/Documents/GitHub/widgets-issue-9")
 
 
 def test_project_from_path_pretty_names(tmp_path: Path):
@@ -1916,16 +1951,16 @@ def test_pr_group_key_mixed_compact():
     assert pr_group_key("sid", mixed) == "widgets #7,8,14 · notes #15"
 
 
-def test_usage_cost_by_app_pretty_keeps_parent_separate(tmp_path: Path):
+def test_usage_cost_by_app_rolls_up_worktrees(tmp_path: Path):
     grok = tmp_path / ".grok"
     paths = {
-        ("%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fgrok-build-cli-utilities"): 1_000_000_000,
+        ("%2FUsers%2Fme%2FDocuments%2FGitHub%2Fwidgets"): 1_000_000_000,
         (
-            "%2FUsers%2Fbrunnr%2F.grok%2Fworktrees%2Fgithub-grok-build-cli-utilities"
+            "%2FUsers%2Fme%2F.grok%2Fworktrees%2Fgithub-widgets"
             "%2Fsubagent-01a05ed6-818e-7c70-9f5f-8acfd1e861a1"
         ): 2_000_000_000,
-        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fnotes-issue-9": 3_000_000_000,
-        "%2FUsers%2Fbrunnr%2FDocuments%2FGitHub%2Fwidgets-issue-79": 4_000_000_000,
+        "%2FUsers%2Fme%2FDocuments%2FGitHub%2Fnotes-issue-9": 3_000_000_000,
+        "%2FUsers%2Fme%2FDocuments%2FGitHub%2Fwidgets-issue-79": 4_000_000_000,
     }
     for i, (encoded, ticks) in enumerate(paths.items()):
         _write_turn(
@@ -1956,14 +1991,141 @@ def test_usage_cost_by_app_pretty_keeps_parent_separate(tmp_path: Path):
             ],
         )
     )
-    keys = {b["key"] for b in data["buckets"]}
-    assert "grok-build-cli-utilities" in keys
-    assert "grok-build-cli-utilities (worktree)" in keys
-    assert "notes#9" in keys
-    assert "widgets#79" in keys
-    assert "notes-issue-9" not in keys
-    assert "widgets-issue-79" not in keys
-    assert not any(k.startswith("subagent-") for k in keys)
+    by_key = {b["key"]: b for b in data["buckets"]}
+    assert set(by_key) == {"widgets", "notes"}
+    assert by_key["widgets"]["prompts"] == 3
+    assert by_key["notes"]["prompts"] == 1
+    assert "notes#9" not in by_key
+    assert "widgets#79" not in by_key
+    assert "widgets (worktree)" not in by_key
+    assert not any("#" in k for k in by_key)
+    assert not any(k.startswith("subagent-") for k in by_key)
+
+
+def test_usage_cost_by_app_parent_and_issue_clone_sum(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    parent = grok / "sessions" / "%2FUsers%2Fme%2FDocuments%2FGitHub%2Fwidgets" / "s1"
+    issue = grok / "sessions" / "%2FUsers%2Fme%2Fsrc%2Fwidgets-issue-9" / "s2"
+    _write_turn(
+        parent / "updates.jsonl",
+        prompt_id="p-parent",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=1,
+        cached=0,
+        reasoning=0,
+        ticks=1_000_000_000,
+    )
+    _write_turn(
+        issue / "updates.jsonl",
+        prompt_id="p-issue",
+        ts="2026-08-02T13:00:00Z",
+        input_t=200,
+        output_t=2,
+        cached=0,
+        reasoning=0,
+        ticks=2_000_000_000,
+    )
+    args = [
+        "-g",
+        str(grok),
+        "usage",
+        "cost",
+        "--from",
+        "2026-08-01",
+        "--to",
+        "2026-08-05",
+        "--json",
+    ]
+    by_app = _json_from_cli(runner.invoke(app, [*args, "--by", "app"]))
+    assert len(by_app["buckets"]) == 1
+    row = by_app["buckets"][0]
+    assert row["key"] == "widgets"
+    assert row["prompts"] == 2
+    assert abs(row["list_usd"] - 0.3) < 1e-6
+    by_project = _json_from_cli(runner.invoke(app, [*args, "--by", "project"]))
+    assert len(by_project["buckets"]) == 2
+    by_sess = _json_from_cli(runner.invoke(app, [*args, "--by", "session"]))
+    assert len(by_sess["buckets"]) == 2
+
+
+def test_usage_cost_by_app_case_merge_prefers_github_spelling(tmp_path: Path):
+    grok = tmp_path / ".grok"
+    _write_turn(
+        grok
+        / "sessions"
+        / "%2FUsers%2Fme%2F.grok%2Fworktrees%2Fgithub-widgets%2Fsubagent-aa"
+        / "s1"
+        / "updates.jsonl",
+        prompt_id="p-wt",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=1,
+        cached=0,
+        reasoning=0,
+        ticks=1_000_000_000,
+    )
+    _write_turn(
+        grok / "sessions" / "%2FUsers%2Fme%2FDocuments%2FGitHub%2FWidgets" / "s2" / "updates.jsonl",
+        prompt_id="p-gh",
+        ts="2026-08-02T13:00:00Z",
+        input_t=100,
+        output_t=1,
+        cached=0,
+        reasoning=0,
+        ticks=2_000_000_000,
+    )
+    data = _json_from_cli(
+        runner.invoke(
+            app,
+            [
+                "-g",
+                str(grok),
+                "usage",
+                "cost",
+                "--from",
+                "2026-08-01",
+                "--to",
+                "2026-08-05",
+                "--by",
+                "app",
+                "--json",
+            ],
+        )
+    )
+    assert [b["key"] for b in data["buckets"]] == ["Widgets"]
+    assert data["buckets"][0]["prompts"] == 2
+    assert abs(data["buckets"][0]["list_usd"] - 0.3) < 1e-6
+
+
+def test_load_keeps_pretty_project_for_unlabeled_session(tmp_path: Path):
+    from grok_build_cli_utilities.utils.usage_tokens import (
+        aggregate,
+        load_turn_usage,
+        session_display_key,
+    )
+
+    sess = (
+        tmp_path
+        / "sessions"
+        / "%2FUsers%2Fme%2FDocuments%2FGitHub%2Fnotes-issue-9"
+        / "sid1"
+        / "updates.jsonl"
+    )
+    _write_turn(
+        sess,
+        prompt_id="p1",
+        ts="2026-08-02T12:00:00Z",
+        input_t=100,
+        output_t=1,
+        cached=0,
+        reasoning=0,
+        ticks=1,
+    )
+    recs = load_turn_usage(tmp_path / "sessions")
+    assert recs[0].project == "notes#9"
+    assert aggregate(recs, "app")[0].key == "notes"
+    assert session_display_key(recs[0].session_id, [], project=recs[0].project) == "notes#9"
 
 
 def test_usage_cost_by_pr_prints_unsplit_note(tmp_path: Path):
